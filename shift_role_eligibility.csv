@@ -2,14 +2,17 @@ shift_id,ruolo
 M,infermiere
 P,infermiere
 R,infermiere
+F,infermiere
 SN,infermiere
 M,oss
 P,oss
 R,oss
+F,oss
 SN,oss
 M,caposala
 P,caposala
 R,caposala
+F,caposala
 SN,caposala
 N,infermiere
 N,oss
