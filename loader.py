@@ -27,6 +27,8 @@ class LoadedData:
     groups_role_min_expanded: pd.DataFrame
     history_df: pd.DataFrame
     availability_df: pd.DataFrame
+    leaves_df: pd.DataFrame
+    holidays_df: pd.DataFrame
 
 def _parse_date(s: str) -> date:
     return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
@@ -36,7 +38,7 @@ def _ensure_cols(df: pd.DataFrame, required: Set[str], label: str):
     if missing:
         raise LoaderError(f"{label}: colonne mancanti {sorted(missing)}")
 
-def build_calendar(start_date: date, end_date: date) -> pd.DataFrame:
+def build_calendar(start_date: date, end_date: date, holidays_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Costruisce un calendario esteso per la pianificazione dei turni clinici.
     
@@ -50,12 +52,18 @@ def build_calendar(start_date: date, end_date: date) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame con le seguenti colonne:
             - data: Data in formato ISO (YYYY-MM-DD)
+            - data_dt: Data in formato datetime64[ns]
             - dow_iso: Giorno della settimana ISO (1=lunedì, 7=domenica)
             - week_start_date: Data di inizio settimana (lunedì) in formato ISO
+            - week_start_date_dt: Data di inizio settimana come datetime64[ns]
             - week_id: Identificativo della settimana (uguale a week_start_date)
             - is_in_horizon: Boolean che indica se la data è nel periodo di pianificazione
             - week_idx: Indice numerico progressivo della settimana (0, 1, 2, ...)
-            - cal_start: Data di inizio del calendario esteso
+            - cal_start: Data di inizio del calendario esteso (ISO)
+            - cal_start_dt: Data di inizio calendario come datetime64[ns]
+            - is_weekend: Boolean che indica se la data è sabato/domenica
+            - is_weekday_holiday: Boolean per i festivi infrasettimanali da holidays.csv
+            - holiday_desc: Descrizione del festivo infrasettimanale (stringa vuota se non festivo)
             
     Note:
         Il calendario inizia dal lunedì della settimana che contiene start_date
@@ -83,6 +91,22 @@ def build_calendar(start_date: date, end_date: date) -> pd.DataFrame:
     wk_map = {ws: i for i, ws in enumerate(sorted(cal["week_start_date"].unique()))}
     cal["week_idx"] = cal["week_start_date"].map(wk_map)
     cal["cal_start"] = cal_start.isoformat()
+    cal["data_dt"] = pd.to_datetime(cal["data"], format="%Y-%m-%d")
+    cal["week_start_date_dt"] = pd.to_datetime(cal["week_start_date"], format="%Y-%m-%d")
+    cal["cal_start_dt"] = pd.to_datetime(cal_start)
+    cal["is_weekend"] = cal["dow_iso"].isin([6, 7])
+
+    holiday_desc_col = pd.Series([""] * len(cal), index=cal.index)
+    if holidays_df is not None and not holidays_df.empty:
+        holidays_unique = holidays_df.drop_duplicates(subset=["data"], keep="first")
+        cal = cal.merge(
+            holidays_unique[["data", "descrizione"]].rename(columns={"descrizione": "holiday_desc"}),
+            on="data",
+            how="left",
+        )
+        holiday_desc_col = cal["holiday_desc"].fillna("")
+    cal["holiday_desc"] = holiday_desc_col.astype(str)
+    cal["is_weekday_holiday"] = cal["holiday_desc"].str.strip().ne("")
     return cal
 
 def load_config(path: str) -> dict:
@@ -95,6 +119,33 @@ def load_config(path: str) -> dict:
         raise LoaderError(f"config: horizon/start_date,end_date mancanti o non validi: {e}")
     return cfg
 
+def load_holidays(path: str) -> pd.DataFrame:
+    """Carica holidays.csv se presente e restituisce [data, data_dt, descrizione]."""
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=["data", "data_dt", "descrizione"])
+
+    df = pd.read_csv(path, dtype=str).fillna("")
+    _ensure_cols(df, {"data", "descrizione"}, "holidays.csv")
+
+    df["data"] = df["data"].astype(str).str.strip()
+    df["descrizione"] = df["descrizione"].astype(str).str.strip()
+
+    if (df["data"] == "").any():
+        raise LoaderError("holidays.csv: la colonna 'data' non può contenere valori vuoti")
+
+    try:
+        df["data_dt"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="raise")
+    except ValueError as exc:
+        raise LoaderError(f"holidays.csv: formato data non valido: {exc}")
+
+    dup_dates = df[df["data"].duplicated(keep=False)]["data"].unique()
+    if len(dup_dates) > 0:
+        raise LoaderError(
+            "holidays.csv: date duplicate non ammesse: " + ", ".join(sorted(dup_dates))
+        )
+
+    return df[["data", "data_dt", "descrizione"]].sort_values("data").reset_index(drop=True)
+
 def load_employees(path: str, defaults: dict) -> pd.DataFrame:
     """
     Legge employees.csv e applica:
@@ -103,6 +154,7 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
     - ore dovute: se vuote, usa defaults['contract_hours_by_role_h'][ruolo]
     - divieto di valori negativi (eccetto saldo iniziale che può essere < 0)
     - conversione ore → minuti per i campi rilevanti
+    - arricchimento con contatori equità weekend/festivi (default 0 se mancanti)
     """
     df = pd.read_csv(path, dtype=str).fillna("")
 
@@ -226,6 +278,11 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
         "max_nights_month", int(defaults.get("max_nights_month", 8))
     )
 
+    # Contatori di equità (weekend/festivi): interi >= 0, default 0
+    df["saturday_count_ytd"] = get_int_with_default("saturday_count_ytd", 0)
+    df["sunday_count_ytd"] = get_int_with_default("sunday_count_ytd", 0)
+    df["holiday_count_ytd"] = get_int_with_default("holiday_count_ytd", 0)
+
     # --- Ritorna solo le colonne utili ---
     return df[
         [
@@ -238,6 +295,9 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
             "max_month_extra_min",
             "max_nights_week",
             "max_nights_month",
+            "saturday_count_ytd",
+            "sunday_count_ytd",
+            "holiday_count_ytd",
         ]
     ]
 
@@ -325,7 +385,24 @@ def load_shifts(path: str) -> pd.DataFrame:
         if cm == 1 and not (em < sm):
             raise LoaderError(f"shifts.csv: per turno {sid} crosses_midnight=1 ma end >= start ({e} >= {s})")
 
-    return df[["shift_id", "start", "end", "duration_min", "crosses_midnight"]]
+    def to_timedelta_or_nat(s: str):
+        if not s:
+            return pd.NaT
+        h, m = s.split(":")
+        return pd.to_timedelta(int(h), unit="h") + pd.to_timedelta(int(m), unit="m")
+
+    df["start_time"] = df["start"].apply(to_timedelta_or_nat)
+    df["end_time"] = df["end"].apply(to_timedelta_or_nat)
+
+    return df[[
+        "shift_id",
+        "start",
+        "end",
+        "duration_min",
+        "crosses_midnight",
+        "start_time",
+        "end_time",
+    ]]
 
 
 def load_shift_role_eligibility(path: str, employees_df: pd.DataFrame, shifts_df: pd.DataFrame) -> pd.DataFrame:
@@ -391,6 +468,10 @@ def load_month_plan(path: str, shifts_df: pd.DataFrame) -> pd.DataFrame:
     df["data"] = df["data"].astype(str).str.strip()
     df["turno"] = df["turno"].astype(str).str.strip()
     df["codice"] = df["codice"].astype(str).str.strip()
+    try:
+        df["data_dt"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="raise")
+    except ValueError as exc:
+        raise LoaderError(f"month_plan.csv: formato data non valido: {exc}")
     bad_turni = sorted(set(df["turno"].unique()) - {"M","P","N"})
     if bad_turni:
         raise LoaderError(f"month_plan.csv: turni non ammessi: {bad_turni}. Ammessi: ['M','P','N']")
@@ -504,19 +585,41 @@ def validate_groups_roles(groups: pd.DataFrame, roles: pd.DataFrame, eligibility
 
 
 def expand_requirements(month_plan: pd.DataFrame, groups: pd.DataFrame, roles: pd.DataFrame):
-    gt = month_plan.merge(groups, on=["codice","turno"], how="left", validate="many_to_many")
+    base_cols = ["data", "turno", "codice"]
+    optional_cols = [c for c in ["data_dt"] if c in month_plan.columns]
+    month_plan_base = month_plan[base_cols + optional_cols]
+
+    gt = month_plan_base.merge(groups, on=["codice","turno"], how="left", validate="many_to_many")
     if gt["gruppo"].isna().any():
         miss = gt[gt["gruppo"].isna()].drop_duplicates(subset=["codice","turno"])[["codice","turno"]]
         raise LoaderError(f"month_plan contiene (codice,turno) senza definizione in coverage_groups:\n{miss}")
     gt["ruoli_totale_set"] = gt["ruoli_totale_list"].apply(lambda xs: "|".join(xs))
-    gt = gt[["data","turno","codice","gruppo","total_min","ruoli_totale_set"]].sort_values(["data","turno","codice","gruppo"])
-    gr = month_plan.merge(roles, on=["codice","turno"], how="left", validate="many_to_many")
+    ordered_cols = ["data"] + optional_cols + ["turno", "codice", "gruppo", "total_min", "ruoli_totale_set"]
+    gt = gt[ordered_cols].sort_values(["data", "turno", "codice", "gruppo"])
+
+    gr = month_plan_base.merge(roles, on=["codice","turno"], how="left", validate="many_to_many")
     gr = gr.dropna(subset=["gruppo"], how="any")
-    gr = gr[["data","turno","codice","gruppo","ruolo","min_ruolo"]].sort_values(["data","turno","codice","gruppo","ruolo"])
+    ordered_cols_roles = ["data"] + optional_cols + ["turno", "codice", "gruppo", "ruolo", "min_ruolo"]
+    gr = gr[ordered_cols_roles].sort_values(["data", "turno", "codice", "gruppo", "ruolo"])
     return gt.reset_index(drop=True), gr.reset_index(drop=True)
 
 def attach_calendar(df: pd.DataFrame, cal: pd.DataFrame) -> pd.DataFrame:
-    return df.merge(cal[["data","dow_iso","week_id","week_idx","is_in_horizon"]], on="data", how="left")
+    return df.merge(
+        cal[[
+            "data",
+            "dow_iso",
+            "week_start_date",
+            "week_start_date_dt",
+            "week_id",
+            "week_idx",
+            "is_in_horizon",
+            "is_weekend",
+            "is_weekday_holiday",
+            "holiday_desc",
+        ]],
+        on="data",
+        how="left",
+    )
 
 def load_availability(
     path: str,
@@ -530,7 +633,8 @@ def load_availability(
       B) tutto il giorno: colonne {data, employee_id} (senza 'turno') oppure 'turno' vuoto/'ALL'/'*'
          -> espansa automaticamente in una riga per ciascun turno in ALLOWED_TURNS.
 
-    Restituisce: [data, employee_id, turno, dow_iso, week_id, week_idx, is_in_horizon]
+    Restituisce: [data, employee_id, turno, dow_iso, week_id, week_idx, is_in_horizon,
+    indicatori weekend/festivi e orari turno]
     """
     import os
 
@@ -543,7 +647,29 @@ def load_availability(
         raise LoaderError("shifts.csv: nessun turno con duration_min>0 (niente turni lavorativi disponibili).")
 
     if not os.path.exists(path):
-        return pd.DataFrame(columns=["data","employee_id","turno","dow_iso","week_id","week_idx","is_in_horizon"])
+        return pd.DataFrame(
+            columns=[
+                "data",
+                "data_dt",
+                "employee_id",
+                "turno",
+                "shift_start_time",
+                "shift_end_time",
+                "shift_start_dt",
+                "shift_end_dt",
+                "shift_duration_min",
+                "shift_crosses_midnight",
+                "dow_iso",
+                "week_start_date",
+                "week_start_date_dt",
+                "week_id",
+                "week_idx",
+                "is_in_horizon",
+                "is_weekend",
+                "is_weekday_holiday",
+                "holiday_desc",
+            ]
+        )
 
     df = pd.read_csv(path, dtype=str).fillna("")
     # Richiede sempre almeno data, employee_id
@@ -552,6 +678,10 @@ def load_availability(
     # Normalizza
     df["data"] = df["data"].astype(str).str.strip()
     df["employee_id"] = df["employee_id"].astype(str).str.strip()
+    try:
+        df["data_dt"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="raise")
+    except ValueError as exc:
+        raise LoaderError(f"availability.csv: formato data non valido: {exc}")
 
     # Se 'turno' non esiste, creala vuota (interpretabile come ALL-day)
     if "turno" not in df.columns:
@@ -580,16 +710,15 @@ def load_availability(
     # Espansione: righe ALL-day -> tutte le voci in allowed_turns
     rows = []
     for _, r in df.iterrows():
-        data = r["data"]
-        emp = r["employee_id"]
+        base_row = {"data": r["data"], "data_dt": r["data_dt"], "employee_id": r["employee_id"]}
         t = r["turno"]
         if t in allowed_turns:
-            rows.append((data, emp, t))
+            rows.append({**base_row, "turno": t})
         else:
             for tt in allowed_turns:
-                rows.append((data, emp, tt))
+                rows.append({**base_row, "turno": tt})
 
-    out = pd.DataFrame(rows, columns=["data","employee_id","turno"]).drop_duplicates().reset_index(drop=True)
+    out = pd.DataFrame(rows).drop_duplicates(subset=["data", "employee_id", "turno"]).reset_index(drop=True)
 
     # Aggancio al calendario e vincolo orizzonte
     out = attach_calendar(out, calendar_df)
@@ -597,7 +726,213 @@ def load_availability(
         outside = out[~out["is_in_horizon"].astype(bool)][["data","employee_id","turno"]]
         raise LoaderError(f"availability.csv: presenti righe fuori orizzonte:\n{outside.head()}")
 
-    return out
+    shift_cols = [
+        "shift_id",
+        "start_time",
+        "end_time",
+        "duration_min",
+        "crosses_midnight",
+    ]
+    shift_info = shifts_df[shift_cols].rename(
+        columns={
+            "shift_id": "turno",
+            "start_time": "shift_start_time",
+            "end_time": "shift_end_time",
+            "duration_min": "shift_duration_min",
+            "crosses_midnight": "shift_crosses_midnight",
+        }
+    )
+    out = out.merge(shift_info, on="turno", how="left", validate="many_to_one")
+
+    out["shift_start_dt"] = out["data_dt"] + out["shift_start_time"]
+    out["shift_end_dt"] = out["data_dt"] + out["shift_end_time"]
+    crosses_mask = out["shift_crosses_midnight"].fillna(0).astype(int) == 1
+    out.loc[crosses_mask, "shift_end_dt"] = out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+
+    return out[[
+        "data",
+        "data_dt",
+        "employee_id",
+        "turno",
+        "shift_start_time",
+        "shift_end_time",
+        "shift_start_dt",
+        "shift_end_dt",
+        "shift_duration_min",
+        "shift_crosses_midnight",
+        "dow_iso",
+        "week_start_date",
+        "week_start_date_dt",
+        "week_id",
+        "week_idx",
+        "is_in_horizon",
+        "is_weekend",
+        "is_weekday_holiday",
+        "holiday_desc",
+    ]]
+
+
+def load_leaves(
+    path: str,
+    employees_df: pd.DataFrame,
+    shifts_df: pd.DataFrame,
+    calendar_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Carica leaves.csv e la espande per giorno×turno lavorativo all'interno dell'orizzonte."""
+
+    allowed_turns = tuple(
+        pd.Series(shifts_df.loc[shifts_df["duration_min"] > 0, "shift_id"])
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    if not allowed_turns:
+        raise LoaderError(
+            "shifts.csv: nessun turno con duration_min>0 — impossibile espandere leaves.csv."
+        )
+
+    base_columns = [
+        "employee_id",
+        "data",
+        "data_dt",
+        "turno",
+        "tipo",
+        "shift_start_time",
+        "shift_end_time",
+        "shift_start_dt",
+        "shift_end_dt",
+        "shift_duration_min",
+        "shift_crosses_midnight",
+        "dow_iso",
+        "week_start_date",
+        "week_start_date_dt",
+        "week_id",
+        "week_idx",
+        "is_in_horizon",
+        "is_weekend",
+        "is_weekday_holiday",
+        "holiday_desc",
+    ]
+
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=base_columns)
+
+    df = pd.read_csv(path, dtype=str).fillna("")
+
+    _ensure_cols(df, {"employee_id", "start_date", "end_date", "tipo"}, "leaves.csv")
+
+    df["employee_id"] = df["employee_id"].astype(str).str.strip()
+    df["start_date"] = df["start_date"].astype(str).str.strip()
+    df["end_date"] = df["end_date"].astype(str).str.strip()
+    df["tipo"] = df["tipo"].astype(str).str.strip()
+
+    known_emp = set(employees_df["employee_id"].unique())
+    unknown = sorted(set(df["employee_id"].unique()) - known_emp)
+    if unknown:
+        raise LoaderError(f"leaves.csv: employee_id sconosciuti: {unknown}")
+
+    try:
+        df["start_date_dt"] = pd.to_datetime(
+            df["start_date"], format="%Y-%m-%d", errors="raise"
+        )
+        df["end_date_dt"] = pd.to_datetime(
+            df["end_date"], format="%Y-%m-%d", errors="raise"
+        )
+    except ValueError as exc:
+        raise LoaderError(f"leaves.csv: formato data non valido: {exc}")
+
+    bad_interval = df["start_date_dt"] > df["end_date_dt"]
+    if bad_interval.any():
+        bad_rows = df.loc[bad_interval, ["employee_id", "start_date", "end_date"]]
+        raise LoaderError(
+            "leaves.csv: intervallo con start_date > end_date per le righe:\n"
+            f"{bad_rows}"
+        )
+
+    records = []
+    for row in df.itertuples(index=False):
+        start = row.start_date_dt.date()
+        end = row.end_date_dt.date()
+        cur = start
+        while cur <= end:
+            day_str = cur.isoformat()
+            for shift_id in allowed_turns:
+                records.append(
+                    {
+                        "employee_id": row.employee_id,
+                        "data": day_str,
+                        "turno": shift_id,
+                        "tipo": row.tipo,
+                    }
+                )
+            cur += timedelta(days=1)
+
+    if not records:
+        return pd.DataFrame(columns=base_columns)
+
+    out = pd.DataFrame.from_records(records)
+    out["data_dt"] = pd.to_datetime(out["data"], format="%Y-%m-%d")
+
+    out = out.drop_duplicates(subset=["employee_id", "data", "turno", "tipo"]).reset_index(
+        drop=True
+    )
+
+    out = attach_calendar(out, calendar_df)
+    out = out[out["is_in_horizon"].fillna(False)].copy()
+
+    shift_cols = [
+        "shift_id",
+        "start_time",
+        "end_time",
+        "duration_min",
+        "crosses_midnight",
+    ]
+    shift_info = shifts_df[shift_cols].rename(
+        columns={
+            "shift_id": "turno",
+            "start_time": "shift_start_time",
+            "end_time": "shift_end_time",
+            "duration_min": "shift_duration_min",
+            "crosses_midnight": "shift_crosses_midnight",
+        }
+    )
+
+    out = out.merge(shift_info, on="turno", how="left", validate="many_to_one")
+
+    out["shift_start_dt"] = out["data_dt"] + out["shift_start_time"]
+    out["shift_end_dt"] = out["data_dt"] + out["shift_end_time"]
+    crosses_mask = out["shift_crosses_midnight"].fillna(0).astype(int) == 1
+    out.loc[crosses_mask, "shift_end_dt"] = (
+        out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+    )
+
+    ordered_cols = [
+        "employee_id",
+        "data",
+        "data_dt",
+        "turno",
+        "tipo",
+        "shift_start_time",
+        "shift_end_time",
+        "shift_start_dt",
+        "shift_end_dt",
+        "shift_duration_min",
+        "shift_crosses_midnight",
+        "dow_iso",
+        "week_start_date",
+        "week_start_date_dt",
+        "week_id",
+        "week_idx",
+        "is_in_horizon",
+        "is_weekend",
+        "is_weekday_holiday",
+        "holiday_desc",
+    ]
+
+    return out[ordered_cols].sort_values(["data", "employee_id", "turno"]).reset_index(
+        drop=True
+    )
 
 
 def load_history(
@@ -615,13 +950,36 @@ def load_history(
       - dedup di record identici (data, employee_id, turno)
       - errore se uno stesso (data, employee_id) compare con più 'turno' diversi (max 1 turno/giorno per dipendente)
       - NON vincola all’orizzonte: può contenere giorni precedenti per i vincoli a cavallo
-    Ritorna: [data, employee_id, turno, dow_iso, week_id, week_idx, is_in_horizon]
+    Ritorna: [data, employee_id, turno, dow_iso, week_id, week_idx, is_in_horizon,
+    indicatori weekend/festivi e metadati del turno]
     """
     import os
     from datetime import datetime
 
     if not os.path.exists(path):
-        return pd.DataFrame(columns=["data","employee_id","turno","dow_iso","week_id","week_idx","is_in_horizon"])
+        return pd.DataFrame(
+            columns=[
+                "data",
+                "data_dt",
+                "employee_id",
+                "turno",
+                "shift_start_time",
+                "shift_end_time",
+                "shift_start_dt",
+                "shift_end_dt",
+                "shift_duration_min",
+                "shift_crosses_midnight",
+                "dow_iso",
+                "week_start_date",
+                "week_start_date_dt",
+                "week_id",
+                "week_idx",
+                "is_in_horizon",
+                "is_weekend",
+                "is_weekday_holiday",
+                "holiday_desc",
+            ]
+        )
 
     df = pd.read_csv(path, dtype=str).fillna("")
 
@@ -631,6 +989,10 @@ def load_history(
     df["data"] = df["data"].astype(str).str.strip()
     df["employee_id"] = df["employee_id"].astype(str).str.strip()
     df["turno"] = df["turno"].astype(str).str.strip()
+    try:
+        df["data_dt"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="raise")
+    except ValueError as exc:
+        raise LoaderError(f"history.csv: formato data non valido: {exc}")
 
     # Formato data YYYY-MM-DD
     def _is_iso_date(s: str) -> bool:
@@ -679,7 +1041,50 @@ def load_history(
     # Aggancio al calendario (può includere giorni fuori orizzonte: è voluto)
     df = attach_calendar(df, calendar_df)
 
-    return df[["data","employee_id","turno","dow_iso","week_id","week_idx","is_in_horizon"]]
+    shift_cols = [
+        "shift_id",
+        "start_time",
+        "end_time",
+        "duration_min",
+        "crosses_midnight",
+    ]
+    shift_info = shifts_df[shift_cols].rename(
+        columns={
+            "shift_id": "turno",
+            "start_time": "shift_start_time",
+            "end_time": "shift_end_time",
+            "duration_min": "shift_duration_min",
+            "crosses_midnight": "shift_crosses_midnight",
+        }
+    )
+    df = df.merge(shift_info, on="turno", how="left", validate="many_to_one")
+
+    df["shift_start_dt"] = df["data_dt"] + df["shift_start_time"]
+    df["shift_end_dt"] = df["data_dt"] + df["shift_end_time"]
+    crosses_mask = df["shift_crosses_midnight"].fillna(0).astype(int) == 1
+    df.loc[crosses_mask, "shift_end_dt"] = df.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+
+    return df[[
+        "data",
+        "data_dt",
+        "employee_id",
+        "turno",
+        "shift_start_time",
+        "shift_end_time",
+        "shift_start_dt",
+        "shift_end_dt",
+        "shift_duration_min",
+        "shift_crosses_midnight",
+        "dow_iso",
+        "week_start_date",
+        "week_start_date_dt",
+        "week_id",
+        "week_idx",
+        "is_in_horizon",
+        "is_weekend",
+        "is_weekday_holiday",
+        "holiday_desc",
+    ]]
 
 
 def load_all(config_path: str, data_dir: str) -> LoadedData:
@@ -687,7 +1092,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     start_date = _parse_date(cfg["horizon"]["start_date"])
     end_date = _parse_date(cfg["horizon"]["end_date"])
 
-    calendar_df = build_calendar(start_date, end_date)
+    holidays_df = load_holidays(os.path.join(data_dir, "holidays.csv"))
+
+    calendar_df = build_calendar(start_date, end_date, holidays_df if not holidays_df.empty else None)
 
     employees_df = load_employees(os.path.join(data_dir, "employees.csv"), cfg.get("defaults", {}))
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
@@ -699,12 +1106,28 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
 
     month_plan_df = attach_calendar(month_plan_df, calendar_df)
 
-    groups_total_expanded, groups_role_min_expanded = expand_requirements(month_plan_df[["data","turno","codice"]], groups_df, roles_df)
+    groups_total_expanded, groups_role_min_expanded = expand_requirements(month_plan_df, groups_df, roles_df)
     groups_total_expanded = attach_calendar(groups_total_expanded, calendar_df)
     groups_role_min_expanded = attach_calendar(groups_role_min_expanded, calendar_df)
 
-    history_df = load_history(os.path.join(data_dir, "history.csv"), shifts_df, calendar_df)
-    availability_df = load_availability(os.path.join(data_dir, "availability.csv"), employees_df, calendar_df)
+    history_df = load_history(
+        os.path.join(data_dir, "history.csv"),
+        employees_df,
+        shifts_df,
+        calendar_df,
+    )
+    leaves_df = load_leaves(
+        os.path.join(data_dir, "leaves.csv"),
+        employees_df,
+        shifts_df,
+        calendar_df,
+    )
+    availability_df = load_availability(
+        os.path.join(data_dir, "availability.csv"),
+        employees_df,
+        calendar_df,
+        shifts_df,
+    )
 
     return LoadedData(
         cfg=cfg,
@@ -717,6 +1140,8 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         groups_role_min_expanded=groups_role_min_expanded,
         history_df=history_df,
         availability_df=availability_df,
+        leaves_df=leaves_df,
+        holidays_df=holidays_df,
     )
 
 if __name__ == "__main__":
@@ -736,8 +1161,11 @@ if __name__ == "__main__":
     print(f"- coverage role min (espansi): {len(data.groups_role_min_expanded)}")
     print(f"- calendar giorni: {len(data.calendar_df)}")
     print(f"- availability righe: {len(data.availability_df)}")
+    print(f"- leaves righe: {len(data.leaves_df)}")
     print(f"- history righe: {len(data.history_df)}")
     print(f"- eligibility coppie (turno,ruolo): {len(data.eligibility_df)}")
+    if not data.holidays_df.empty:
+        print(f"- holidays caricati: {len(data.holidays_df)}")
 
     if args.export_csv:
         outdir = os.path.join(args.data_dir, "_expanded")
@@ -749,6 +1177,7 @@ if __name__ == "__main__":
         data.employees_df.to_csv(os.path.join(outdir, "employees_processed.csv"), index=False)
         data.shifts_df.to_csv(os.path.join(outdir, "shifts_processed.csv"), index=False)
         data.availability_df.to_csv(os.path.join(outdir, "availability_with_calendar.csv"), index=False)
+        data.leaves_df.to_csv(os.path.join(outdir, "leaves_expanded.csv"), index=False)
         data.history_df.to_csv(os.path.join(outdir, "history_with_calendar.csv"), index=False)
         data.eligibility_df.to_csv(os.path.join(outdir, "shift_role_eligibility_processed.csv"), index=False)
         print(f"Esportati CSV di debug in: {outdir}")
