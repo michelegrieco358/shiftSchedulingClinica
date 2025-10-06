@@ -28,6 +28,7 @@ class LoadedData:
     history_df: pd.DataFrame
     availability_df: pd.DataFrame
     leaves_df: pd.DataFrame
+    leaves_days_df: pd.DataFrame
     holidays_df: pd.DataFrame
     role_dept_pools_df: pd.DataFrame
     dept_compat_df: pd.DataFrame
@@ -382,7 +383,7 @@ def load_shifts(path: str) -> pd.DataFrame:
     Requisiti:
       - colonne obbligatorie: shift_id, start, end, duration_min, crosses_midnight
       - shift_id univoci (duplicati identici vengono deduplicati; se divergenti -> errore)
-      - R e SN: duration_min=0, crosses_midnight=0, start/end vuoti
+      - R, SN e F: duration_min=0, crosses_midnight=0, start/end vuoti
       - turni con duration_min>0: start/end obbligatori in formato HH:MM
       - crosses_midnight ∈ {0,1}
       - coerenza base:
@@ -423,14 +424,17 @@ def load_shifts(path: str) -> pd.DataFrame:
         # tutte le definizioni identiche -> teniamo una sola riga
         df = df.drop_duplicates(subset=key_cols, keep="first").reset_index(drop=True)
 
-    # Regole speciali per R/SN (riposo, smonto notte)
-    mask_zero = df["shift_id"].isin({"R", "SN"})
+    # Regole speciali per turni a durata nulla (riposo/ferie/smonto notte)
+    zero_duration_shifts = {"R", "SN", "F"}
+    mask_zero = df["shift_id"].isin(zero_duration_shifts)
     if not df.loc[mask_zero, "duration_min"].eq(0).all() or not df.loc[mask_zero, "crosses_midnight"].eq(0).all():
-        raise LoaderError("shifts.csv: R e SN devono avere duration_min=0 e crosses_midnight=0")
+        raise LoaderError(
+            "shifts.csv: R, SN e F devono avere duration_min=0 e crosses_midnight=0"
+        )
 
-    # Per R/SN richiediamo start/end vuoti (stringa vuota)
+    # Per i turni a durata nulla richiediamo start/end vuoti (stringa vuota)
     if (df.loc[mask_zero, ["start", "end"]] != "").any().any():
-        raise LoaderError("shifts.csv: R e SN devono avere start/end vuoti")
+        raise LoaderError("shifts.csv: R, SN e F devono avere start/end vuoti")
 
     # Per tutti gli altri shift_id: duration_min deve essere > 0
     mask_nzero = ~mask_zero
@@ -961,8 +965,8 @@ def load_leaves(
     employees_df: pd.DataFrame,
     shifts_df: pd.DataFrame,
     calendar_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Carica leaves.csv e la espande per giorno×turno lavorativo all'interno dell'orizzonte."""
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carica leaves.csv, espande le assenze su turni lavorativi e produce l'aggregato day-level."""
 
     allowed_turns = tuple(
         pd.Series(shifts_df.loc[shifts_df["duration_min"] > 0, "shift_id"])
@@ -976,7 +980,7 @@ def load_leaves(
             "shifts.csv: nessun turno con duration_min>0 — impossibile espandere leaves.csv."
         )
 
-    base_columns = [
+    shift_columns = [
         "employee_id",
         "data",
         "data_dt",
@@ -999,8 +1003,27 @@ def load_leaves(
         "holiday_desc",
     ]
 
+    day_columns = [
+        "employee_id",
+        "data",
+        "data_dt",
+        "tipo_set",
+        "is_leave_day",
+        "dow_iso",
+        "week_start_date",
+        "week_start_date_dt",
+        "week_id",
+        "week_idx",
+        "is_in_horizon",
+        "is_weekend",
+        "is_weekday_holiday",
+        "holiday_desc",
+    ]
+
     if not os.path.exists(path):
-        return pd.DataFrame(columns=base_columns)
+        empty_shift = pd.DataFrame(columns=shift_columns)
+        empty_day = pd.DataFrame(columns=day_columns)
+        return empty_shift, empty_day
 
     df = pd.read_csv(path, dtype=str).fillna("")
 
@@ -1044,12 +1067,26 @@ def load_leaves(
     shift_rows = list(shift_info.itertuples(index=False))
 
     records = []
+    day_records = []
     for row in df.itertuples(index=False):
-        absence_start = row.start_date_dt.normalize()
-        absence_end = row.end_date_dt.normalize() + pd.Timedelta(days=1)
+        absence_start_day = row.start_date_dt.normalize()
+        absence_end_day = row.end_date_dt.normalize()
+        absence_interval_start = absence_start_day
+        absence_interval_end = absence_end_day + pd.Timedelta(days=1)
 
-        day = row.start_date_dt.normalize() - pd.Timedelta(days=1)
-        last_day = row.end_date_dt.normalize()
+        current_day = absence_start_day
+        while current_day <= absence_end_day:
+            day_records.append(
+                {
+                    "employee_id": row.employee_id,
+                    "data": current_day.date().isoformat(),
+                    "tipo": row.tipo,
+                }
+            )
+            current_day += pd.Timedelta(days=1)
+
+        day = absence_start_day - pd.Timedelta(days=1)
+        last_day = absence_end_day
 
         while day <= last_day:
             day_str = day.date().isoformat()
@@ -1062,7 +1099,7 @@ def load_leaves(
                 if int(shift.crosses_midnight) == 1:
                     shift_end_dt = shift_end_dt + pd.Timedelta(days=1)
 
-                if shift_end_dt > absence_start and shift_start_dt < absence_end:
+                if shift_end_dt > absence_interval_start and shift_start_dt < absence_interval_end:
                     records.append(
                         {
                             "employee_id": row.employee_id,
@@ -1073,71 +1110,120 @@ def load_leaves(
                     )
             day += pd.Timedelta(days=1)
 
-    if not records:
-        return pd.DataFrame(columns=base_columns)
+    if records:
+        shift_out = pd.DataFrame.from_records(records)
+        shift_out["data_dt"] = pd.to_datetime(shift_out["data"], format="%Y-%m-%d")
 
-    out = pd.DataFrame.from_records(records)
-    out["data_dt"] = pd.to_datetime(out["data"], format="%Y-%m-%d")
+        shift_out = shift_out.drop_duplicates(
+            subset=["employee_id", "data", "turno", "tipo"]
+        ).reset_index(drop=True)
 
-    out = out.drop_duplicates(subset=["employee_id", "data", "turno", "tipo"]).reset_index(
-        drop=True
-    )
+        shift_out = attach_calendar(shift_out, calendar_df)
+        shift_out = shift_out[shift_out["is_in_horizon"].fillna(False)].copy()
 
-    out = attach_calendar(out, calendar_df)
-    out = out[out["is_in_horizon"].fillna(False)].copy()
-
-    shift_cols = [
+        shift_cols = [
         "shift_id",
         "start_time",
         "end_time",
         "duration_min",
         "crosses_midnight",
     ]
-    shift_info = shifts_df[shift_cols].rename(
-        columns={
-            "shift_id": "turno",
-            "start_time": "shift_start_time",
-            "end_time": "shift_end_time",
-            "duration_min": "shift_duration_min",
-            "crosses_midnight": "shift_crosses_midnight",
-        }
-    )
+        shift_info = shifts_df[shift_cols].rename(
+            columns={
+                "shift_id": "turno",
+                "start_time": "shift_start_time",
+                "end_time": "shift_end_time",
+                "duration_min": "shift_duration_min",
+                "crosses_midnight": "shift_crosses_midnight",
+            }
+        )
 
-    out = out.merge(shift_info, on="turno", how="left", validate="many_to_one")
+        shift_out = shift_out.merge(shift_info, on="turno", how="left", validate="many_to_one")
 
-    out["shift_start_dt"] = out["data_dt"] + out["shift_start_time"]
-    out["shift_end_dt"] = out["data_dt"] + out["shift_end_time"]
-    crosses_mask = out["shift_crosses_midnight"].fillna(0).astype(int) == 1
-    out.loc[crosses_mask, "shift_end_dt"] = (
-        out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
-    )
+        shift_out["shift_start_dt"] = shift_out["data_dt"] + shift_out["shift_start_time"]
+        shift_out["shift_end_dt"] = shift_out["data_dt"] + shift_out["shift_end_time"]
+        crosses_mask = shift_out["shift_crosses_midnight"].fillna(0).astype(int) == 1
+        shift_out.loc[crosses_mask, "shift_end_dt"] = (
+            shift_out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+        )
 
-    ordered_cols = [
-        "employee_id",
-        "data",
-        "data_dt",
-        "turno",
-        "tipo",
-        "shift_start_time",
-        "shift_end_time",
-        "shift_start_dt",
-        "shift_end_dt",
-        "shift_duration_min",
-        "shift_crosses_midnight",
-        "dow_iso",
-        "week_start_date",
-        "week_start_date_dt",
-        "week_id",
-        "week_idx",
-        "is_in_horizon",
-        "is_weekend",
-        "is_weekday_holiday",
-        "holiday_desc",
-    ]
+        shift_out = shift_out[
+            [
+                "employee_id",
+                "data",
+                "data_dt",
+                "turno",
+                "tipo",
+                "shift_start_time",
+                "shift_end_time",
+                "shift_start_dt",
+                "shift_end_dt",
+                "shift_duration_min",
+                "shift_crosses_midnight",
+                "dow_iso",
+                "week_start_date",
+                "week_start_date_dt",
+                "week_id",
+                "week_idx",
+                "is_in_horizon",
+                "is_weekend",
+                "is_weekday_holiday",
+                "holiday_desc",
+            ]
+        ].sort_values(["data", "employee_id", "turno"]).reset_index(drop=True)
+    else:
+        shift_out = pd.DataFrame(columns=shift_columns)
 
-    return out[ordered_cols].sort_values(["data", "employee_id", "turno"]).reset_index(
-        drop=True
-    )
+    if day_records:
+        day_out = pd.DataFrame.from_records(day_records)
+        day_out = day_out.drop_duplicates().reset_index(drop=True)
+        day_out["data_dt"] = pd.to_datetime(day_out["data"], format="%Y-%m-%d")
+        day_out = attach_calendar(day_out, calendar_df)
+        day_out = day_out[day_out["is_in_horizon"].fillna(False)].copy()
+
+        def _join_types(values: pd.Series) -> str:
+            unique_vals = sorted({str(v).strip() for v in values if str(v).strip()})
+            return "|".join(unique_vals)
+
+        day_out = (
+            day_out.groupby(["employee_id", "data"], as_index=False)
+            .agg(
+                data_dt=("data_dt", "first"),
+                tipo_set=("tipo", _join_types),
+                dow_iso=("dow_iso", "first"),
+                week_start_date=("week_start_date", "first"),
+                week_start_date_dt=("week_start_date_dt", "first"),
+                week_id=("week_id", "first"),
+                week_idx=("week_idx", "first"),
+                is_in_horizon=("is_in_horizon", "first"),
+                is_weekend=("is_weekend", "first"),
+                is_weekday_holiday=("is_weekday_holiday", "first"),
+                holiday_desc=("holiday_desc", "first"),
+            )
+        )
+        day_out["is_leave_day"] = 1
+        day_out = day_out[
+            [
+                "employee_id",
+                "data",
+                "data_dt",
+                "tipo_set",
+                "is_leave_day",
+                "dow_iso",
+                "week_start_date",
+                "week_start_date_dt",
+                "week_id",
+                "week_idx",
+                "is_in_horizon",
+                "is_weekend",
+                "is_weekday_holiday",
+                "holiday_desc",
+            ]
+        ].sort_values(["data", "employee_id"]).reset_index(drop=True)
+    else:
+        day_out = pd.DataFrame(columns=day_columns)
+
+    return shift_out, day_out
 
 
 def load_history(
@@ -1333,7 +1419,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         shifts_df,
         calendar_df,
     )
-    leaves_df = load_leaves(
+    leaves_df, leaves_days_df = load_leaves(
         os.path.join(data_dir, "leaves.csv"),
         employees_df,
         shifts_df,
@@ -1358,6 +1444,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         history_df=history_df,
         availability_df=availability_df,
         leaves_df=leaves_df,
+        leaves_days_df=leaves_days_df,
         holidays_df=holidays_df,
         role_dept_pools_df=role_dept_pools_df,
         dept_compat_df=dept_compat_df,
@@ -1381,6 +1468,7 @@ if __name__ == "__main__":
     print(f"- calendar giorni: {len(data.calendar_df)}")
     print(f"- availability righe: {len(data.availability_df)}")
     print(f"- leaves righe: {len(data.leaves_df)}")
+    print(f"- leave days: {len(data.leaves_days_df)}")
     print(f"- history righe: {len(data.history_df)}")
     print(f"- eligibility coppie (turno,ruolo): {len(data.eligibility_df)}")
     if not data.holidays_df.empty:
@@ -1397,6 +1485,7 @@ if __name__ == "__main__":
         data.shifts_df.to_csv(os.path.join(outdir, "shifts_processed.csv"), index=False)
         data.availability_df.to_csv(os.path.join(outdir, "availability_with_calendar.csv"), index=False)
         data.leaves_df.to_csv(os.path.join(outdir, "leaves_expanded.csv"), index=False)
+        data.leaves_days_df.to_csv(os.path.join(outdir, "leaves_days.csv"), index=False)
         data.history_df.to_csv(os.path.join(outdir, "history_with_calendar.csv"), index=False)
         data.eligibility_df.to_csv(os.path.join(outdir, "shift_role_eligibility_processed.csv"), index=False)
         print(f"Esportati CSV di debug in: {outdir}")
