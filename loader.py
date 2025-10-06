@@ -1034,23 +1034,44 @@ def load_leaves(
             f"{bad_rows}"
         )
 
+    shift_info = (
+        shifts_df.loc[
+            shifts_df["shift_id"].isin(allowed_turns),
+            ["shift_id", "start_time", "end_time", "crosses_midnight"],
+        ]
+        .copy()
+    )
+    shift_rows = list(shift_info.itertuples(index=False))
+
     records = []
     for row in df.itertuples(index=False):
-        start = row.start_date_dt.date()
-        end = row.end_date_dt.date()
-        cur = start
-        while cur <= end:
-            day_str = cur.isoformat()
-            for shift_id in allowed_turns:
-                records.append(
-                    {
-                        "employee_id": row.employee_id,
-                        "data": day_str,
-                        "turno": shift_id,
-                        "tipo": row.tipo,
-                    }
-                )
-            cur += timedelta(days=1)
+        absence_start = row.start_date_dt.normalize()
+        absence_end = row.end_date_dt.normalize() + pd.Timedelta(days=1)
+
+        day = row.start_date_dt.normalize() - pd.Timedelta(days=1)
+        last_day = row.end_date_dt.normalize()
+
+        while day <= last_day:
+            day_str = day.date().isoformat()
+            for shift in shift_rows:
+                if pd.isna(shift.start_time) or pd.isna(shift.end_time):
+                    continue
+
+                shift_start_dt = day + shift.start_time
+                shift_end_dt = day + shift.end_time
+                if int(shift.crosses_midnight) == 1:
+                    shift_end_dt = shift_end_dt + pd.Timedelta(days=1)
+
+                if shift_end_dt > absence_start and shift_start_dt < absence_end:
+                    records.append(
+                        {
+                            "employee_id": row.employee_id,
+                            "data": day_str,
+                            "turno": shift.shift_id,
+                            "tipo": row.tipo,
+                        }
+                    )
+            day += pd.Timedelta(days=1)
 
     if not records:
         return pd.DataFrame(columns=base_columns)
