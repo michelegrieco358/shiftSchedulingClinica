@@ -1,0 +1,14 @@
+codice,turno,gruppo,ruolo,min_ruolo
+S,M,000-Tetto,infermiere,2
+S,M,000-Tetto,oss,5
+S,M,001-Caposala,caposala,2
+S,P,000-Tetto,infermiere,2
+S,P,000-Tetto,oss,3
+S,N,000-Tetto,infermiere,1
+S,N,000-Tetto,oss,1
+T,M,000-Tetto,infermiere,2
+T,M,000-Tetto,oss,3
+T,P,000-Tetto,infermiere,1
+T,P,000-Tetto,oss,3
+T,N,000-Tetto,infermiere,1
+T,N,000-Tetto,oss,1

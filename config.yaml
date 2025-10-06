@@ -1,0 +1,14 @@
+horizon:
+  start_date: 2025-11-01
+  end_date: 2025-11-30
+
+rest_rules:
+  min_between_shifts_h: 11
+  post_night_rest_h: 48
+  weekly_rest_min_h: 24
+
+defaults:
+  max_week_hours_h: 60
+  max_month_extra_h: 40
+  max_nights_week: 3
+  max_nights_month: 8

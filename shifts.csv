@@ -1,0 +1,4 @@
+shift_id,nome,start,end,duration_min,crosses_midnight
+M,mattino,07:00,14:30,420,0
+P,pomeriggio,14:00,21:30,420,0
+N,notte,21:00,07:30,630,1
