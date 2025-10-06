@@ -3,7 +3,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import pandas as pd
+try:  # pragma: no cover - dipendenza runtime
+    import pandas as pd
+except ModuleNotFoundError as exc:  # pragma: no cover - messaggio esplicativo
+    raise ModuleNotFoundError(
+        "Il pacchetto 'pandas' è richiesto per eseguire il loader. "
+        "Installarlo con `pip install -r requirements.txt`."
+    ) from exc
 
 from .availability import load_availability
 from .calendar import attach_calendar, build_calendar

@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 
-from . import load_all
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Loader clinica — Step A (v6)")
@@ -14,6 +12,16 @@ def main() -> None:
         "--export-csv", action="store_true", help="Esporta i DF espansi come CSV di debug"
     )
     args = ap.parse_args()
+
+    try:
+        from . import load_all
+    except ModuleNotFoundError as exc:  # pragma: no cover - dipendenza runtime
+        if getattr(exc, "name", None) == "pandas":
+            raise SystemExit(
+                "Errore: il modulo 'pandas' non è installato. "
+                "Eseguire `pip install -r requirements.txt` prima di lanciare il loader."
+            ) from exc
+        raise
 
     data = load_all(args.config, args.data_dir)
 
