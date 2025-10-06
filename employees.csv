@@ -1,4 +1,4 @@
-employee_id,nome,ruolo,ore_dovute_mese_h,saldo_prog_iniziale_h,max_week_hours_h,max_month_extra_h,max_nights_week,max_nights_month,saturday_count_ytd,sunday_count_ytd,holiday_count_ytd
-E001,Anna Rossi,infermiere,168,-4,60,40,3,8,0,0,0
-E002,Marco Bianchi,oss,168,2,60,40,3,8,0,0,0
-E003,Lucia Verdi,caposala,168,0,60,40,3,8,0,0,0
+employee_id,nome,ruolo,reparto,ore_dovute_mese_h,saldo_prog_iniziale_h,max_week_hours_h,max_month_extra_h,max_nights_week,max_nights_month,saturday_count_ytd,sunday_count_ytd,holiday_count_ytd
+E001,Anna Rossi,infermiere,ortopedia,168,-4,60,40,3,8,0,0,0
+E002,Marco Bianchi,oss,degenza,168,2,60,40,3,8,0,0,0
+E003,Lucia Verdi,caposala,cardiologia,168,0,60,40,3,8,0,0,0
