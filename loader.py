@@ -703,8 +703,18 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     groups_total_expanded = attach_calendar(groups_total_expanded, calendar_df)
     groups_role_min_expanded = attach_calendar(groups_role_min_expanded, calendar_df)
 
-    history_df = load_history(os.path.join(data_dir, "history.csv"), shifts_df, calendar_df)
-    availability_df = load_availability(os.path.join(data_dir, "availability.csv"), employees_df, calendar_df)
+    history_df = load_history(
+        os.path.join(data_dir, "history.csv"),
+        employees_df,
+        shifts_df,
+        calendar_df,
+    )
+    availability_df = load_availability(
+        os.path.join(data_dir, "availability.csv"),
+        employees_df,
+        calendar_df,
+        shifts_df,
+    )
 
     return LoadedData(
         cfg=cfg,
