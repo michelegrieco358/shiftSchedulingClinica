@@ -5,7 +5,7 @@ Loader clinica —
 from __future__ import annotations
 import os
 from dataclasses import dataclass
-from typing import Set
+from typing import Iterable, Set
 import pandas as pd
 from datetime import datetime, date, timedelta
 import yaml
@@ -29,6 +29,8 @@ class LoadedData:
     availability_df: pd.DataFrame
     leaves_df: pd.DataFrame
     holidays_df: pd.DataFrame
+    role_dept_pools_df: pd.DataFrame
+    dept_compat_df: pd.DataFrame
 
 def _parse_date(s: str) -> date:
     return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
@@ -37,6 +39,60 @@ def _ensure_cols(df: pd.DataFrame, required: Set[str], label: str):
     missing = required - set(df.columns)
     if missing:
         raise LoaderError(f"{label}: colonne mancanti {sorted(missing)}")
+
+
+def _resolve_allowed_roles(defaults: dict, fallback_roles: Iterable[str] | None = None) -> list[str]:
+    allowed_roles_cfg = defaults.get("allowed_roles", None)
+    roles: list[str]
+    if isinstance(allowed_roles_cfg, str):
+        roles = [
+            x.strip()
+            for x in allowed_roles_cfg.replace(",", "|").split("|")
+            if x.strip()
+        ]
+    elif isinstance(allowed_roles_cfg, (list, tuple, set)):
+        roles = [str(x).strip() for x in allowed_roles_cfg if str(x).strip()]
+    else:
+        roles = []
+
+    if not roles and fallback_roles is not None:
+        roles = [str(x).strip() for x in fallback_roles if str(x).strip()]
+
+    # Dedup preservando ordine
+    seen = set()
+    deduped = []
+    for role in roles:
+        if role not in seen:
+            seen.add(role)
+            deduped.append(role)
+    return deduped
+
+
+def _resolve_allowed_departments(defaults: dict) -> list[str]:
+    departments_cfg = defaults.get("departments", None)
+    if isinstance(departments_cfg, str):
+        departments = [
+            x.strip()
+            for x in departments_cfg.replace(",", "|").split("|")
+            if x.strip()
+        ]
+    elif isinstance(departments_cfg, (list, tuple, set)):
+        departments = [str(x).strip() for x in departments_cfg if str(x).strip()]
+    else:
+        departments = []
+
+    if not departments:
+        raise LoaderError(
+            "config: defaults.departments deve essere una lista non vuota di reparti ammessi"
+        )
+
+    seen = set()
+    deduped = []
+    for dept in departments:
+        if dept not in seen:
+            seen.add(dept)
+            deduped.append(dept)
+    return deduped
 
 def build_calendar(start_date: date, end_date: date, holidays_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """
@@ -160,7 +216,14 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
 
     _ensure_cols(
         df,
-        {"employee_id", "nome", "ruolo", "ore_dovute_mese_h", "saldo_prog_iniziale_h"},
+        {
+            "employee_id",
+            "nome",
+            "ruolo",
+            "reparto",
+            "ore_dovute_mese_h",
+            "saldo_prog_iniziale_h",
+        },
         "employees.csv",
     )
 
@@ -173,18 +236,28 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
 
     # --- Ruoli ammessi da config (opzionale ma consigliato) ---
     # defaults['allowed_roles'] può essere lista oppure stringa pipe/comma-separated.
-    allowed_roles_cfg = defaults.get("allowed_roles", None)
-    if isinstance(allowed_roles_cfg, str):
-        allowed_roles = [x.strip() for x in allowed_roles_cfg.replace(",", "|").split("|") if x.strip()]
-    elif isinstance(allowed_roles_cfg, (list, tuple, set)):
-        allowed_roles = [str(x).strip() for x in allowed_roles_cfg if str(x).strip()]
-    else:
-        # Fallback: accetta i ruoli presenti nel file (non bloccante)
-        allowed_roles = sorted(df["ruolo"].unique())
+    allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=df["ruolo"].unique())
 
     bad_roles = sorted(set(df["ruolo"].unique()) - set(allowed_roles))
     if bad_roles:
         raise LoaderError(f"employees.csv: ruoli non ammessi rispetto alla config: {bad_roles}")
+
+    # --- Reparti ammessi e obbligatorietà del campo ---
+    allowed_departments = _resolve_allowed_departments(defaults)
+    df["reparto"] = df["reparto"].astype(str).str.strip()
+    if (df["reparto"] == "").any():
+        bad = df.loc[df["reparto"] == "", ["employee_id", "nome", "ruolo"]]
+        raise LoaderError(
+            "employees.csv: la colonna 'reparto' è obbligatoria e non può essere vuota. "
+            f"Righe interessate:\n{bad}"
+        )
+
+    bad_departments = sorted(set(df["reparto"].unique()) - set(allowed_departments))
+    if bad_departments:
+        raise LoaderError(
+            "employees.csv: reparti non ammessi rispetto alla config (defaults.departments): "
+            f"{bad_departments}"
+        )
 
     # --- Helper di parsing ---
     def parse_hours_nonneg(x, field_name: str) -> float:
@@ -289,6 +362,7 @@ def load_employees(path: str, defaults: dict) -> pd.DataFrame:
             "employee_id",
             "nome",
             "ruolo",
+            "reparto",
             "dovuto_min",
             "saldo_init_min",
             "max_week_min",
@@ -460,6 +534,116 @@ def load_shift_role_eligibility(path: str, employees_df: pd.DataFrame, shifts_df
     # ordina per leggibilità
     df = df.sort_values(["shift_id", "ruolo"]).reset_index(drop=True)
     return df[["shift_id", "ruolo"]]
+
+
+def load_role_dept_pools(
+    path: str, defaults: dict, employees_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Carica e valida la tabella di pool reparti ↔ ruolo.
+
+    - colonne obbligatorie: ruolo, pool_id, reparto
+    - ruolo deve essere ammesso da config (fallback ai ruoli presenti negli employees)
+    - reparto deve appartenere al vocabolario defaults.departments
+    - nessun valore vuoto e nessun duplicato su (ruolo, pool_id, reparto)
+    """
+
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=["ruolo", "pool_id", "reparto"])
+
+    df = pd.read_csv(path, dtype=str).fillna("")
+    _ensure_cols(df, {"ruolo", "pool_id", "reparto"}, "role_dept_pools.csv")
+
+    for col in ["ruolo", "pool_id", "reparto"]:
+        df[col] = df[col].astype(str).str.strip()
+
+    if (df[["ruolo", "pool_id", "reparto"]] == "").any().any():
+        bad_rows = df.loc[(df[["ruolo", "pool_id", "reparto"]] == "").any(axis=1)]
+        raise LoaderError(
+            "role_dept_pools.csv: valori vuoti non ammessi nelle colonne ruolo/pool_id/reparto. "
+            f"Righe interessate:\n{bad_rows}"
+        )
+
+    allowed_roles = set(
+        _resolve_allowed_roles(defaults, fallback_roles=employees_df["ruolo"].unique())
+    )
+    allowed_departments = set(_resolve_allowed_departments(defaults))
+
+    bad_roles = sorted(set(df["ruolo"].unique()) - allowed_roles)
+    if bad_roles:
+        raise LoaderError(
+            "role_dept_pools.csv: ruoli non ammessi rispetto alla config: "
+            f"{bad_roles}"
+        )
+
+    bad_departments = sorted(set(df["reparto"].unique()) - allowed_departments)
+    if bad_departments:
+        raise LoaderError(
+            "role_dept_pools.csv: reparti non ammessi rispetto alla config: "
+            f"{bad_departments}"
+        )
+
+    if df.duplicated(subset=["ruolo", "pool_id", "reparto"]).any():
+        dup = df[
+            df.duplicated(subset=["ruolo", "pool_id", "reparto"], keep=False)
+        ].sort_values(["ruolo", "pool_id", "reparto"])
+        raise LoaderError(
+            "role_dept_pools.csv: duplicati non ammessi su (ruolo, pool_id, reparto):\n"
+            f"{dup}"
+        )
+
+    return df.sort_values(["ruolo", "pool_id", "reparto"]).reset_index(drop=True)
+
+
+def build_department_compatibility(
+    defaults: dict, pools_df: pd.DataFrame, employees_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Costruisce la tabella delle compatibilità ruolo/reparto (home → target).
+
+    Include sempre l'identità (home == target) per tutti i reparti ammessi,
+    per ciascun ruolo ammesso. Se esistono pool per un ruolo, espande tutte
+    le combinazioni simmetriche tra i reparti del pool.
+    """
+
+    allowed_roles = _resolve_allowed_roles(
+        defaults, fallback_roles=employees_df["ruolo"].unique()
+    )
+    allowed_departments = _resolve_allowed_departments(defaults)
+
+    combos: list[tuple[str, str, str]] = []
+    seen = set()
+
+    def add(role: str, dept_home: str, dept_target: str):
+        key = (role, dept_home, dept_target)
+        if key not in seen:
+            seen.add(key)
+            combos.append(key)
+
+    for role in allowed_roles:
+        for dept in allowed_departments:
+            add(role, dept, dept)
+
+    if not pools_df.empty:
+        pools_by_role = {role: grp for role, grp in pools_df.groupby("ruolo")}
+        for role in allowed_roles:
+            role_df = pools_by_role.get(role)
+            if role_df is None:
+                continue
+            for _, pool_df in role_df.groupby("pool_id"):
+                pool_departments = list(dict.fromkeys(pool_df["reparto"].tolist()))
+                for dept_home in pool_departments:
+                    for dept_target in pool_departments:
+                        add(role, dept_home, dept_target)
+
+    compat_df = pd.DataFrame(
+        combos, columns=["ruolo", "reparto_home", "reparto_target"]
+    )
+    if not compat_df.empty:
+        compat_df = compat_df.sort_values(
+            ["ruolo", "reparto_home", "reparto_target"]
+        ).reset_index(drop=True)
+    return compat_df
 
 
 def load_month_plan(path: str, shifts_df: pd.DataFrame) -> pd.DataFrame:
@@ -850,23 +1034,44 @@ def load_leaves(
             f"{bad_rows}"
         )
 
+    shift_info = (
+        shifts_df.loc[
+            shifts_df["shift_id"].isin(allowed_turns),
+            ["shift_id", "start_time", "end_time", "crosses_midnight"],
+        ]
+        .copy()
+    )
+    shift_rows = list(shift_info.itertuples(index=False))
+
     records = []
     for row in df.itertuples(index=False):
-        start = row.start_date_dt.date()
-        end = row.end_date_dt.date()
-        cur = start
-        while cur <= end:
-            day_str = cur.isoformat()
-            for shift_id in allowed_turns:
-                records.append(
-                    {
-                        "employee_id": row.employee_id,
-                        "data": day_str,
-                        "turno": shift_id,
-                        "tipo": row.tipo,
-                    }
-                )
-            cur += timedelta(days=1)
+        absence_start = row.start_date_dt.normalize()
+        absence_end = row.end_date_dt.normalize() + pd.Timedelta(days=1)
+
+        day = row.start_date_dt.normalize() - pd.Timedelta(days=1)
+        last_day = row.end_date_dt.normalize()
+
+        while day <= last_day:
+            day_str = day.date().isoformat()
+            for shift in shift_rows:
+                if pd.isna(shift.start_time) or pd.isna(shift.end_time):
+                    continue
+
+                shift_start_dt = day + shift.start_time
+                shift_end_dt = day + shift.end_time
+                if int(shift.crosses_midnight) == 1:
+                    shift_end_dt = shift_end_dt + pd.Timedelta(days=1)
+
+                if shift_end_dt > absence_start and shift_start_dt < absence_end:
+                    records.append(
+                        {
+                            "employee_id": row.employee_id,
+                            "data": day_str,
+                            "turno": shift.shift_id,
+                            "tipo": row.tipo,
+                        }
+                    )
+            day += pd.Timedelta(days=1)
 
     if not records:
         return pd.DataFrame(columns=base_columns)
@@ -1092,13 +1297,25 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     start_date = _parse_date(cfg["horizon"]["start_date"])
     end_date = _parse_date(cfg["horizon"]["end_date"])
 
+    defaults = cfg.get("defaults", {})
+
     holidays_df = load_holidays(os.path.join(data_dir, "holidays.csv"))
 
     calendar_df = build_calendar(start_date, end_date, holidays_df if not holidays_df.empty else None)
 
-    employees_df = load_employees(os.path.join(data_dir, "employees.csv"), cfg.get("defaults", {}))
+    employees_df = load_employees(os.path.join(data_dir, "employees.csv"), defaults)
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
     eligibility_df = load_shift_role_eligibility(os.path.join(data_dir, "shift_role_eligibility.csv"), employees_df, shifts_df)
+    role_dept_pools_df = load_role_dept_pools(
+        os.path.join(data_dir, "role_dept_pools.csv"),
+        defaults,
+        employees_df,
+    )
+    dept_compat_df = build_department_compatibility(
+        defaults,
+        role_dept_pools_df,
+        employees_df,
+    )
     month_plan_df = load_month_plan(os.path.join(data_dir, "month_plan.csv"), shifts_df)
     groups_df = load_coverage_groups(os.path.join(data_dir, "coverage_groups.csv"))
     roles_df = load_coverage_roles(os.path.join(data_dir, "coverage_roles.csv"))
@@ -1142,6 +1359,8 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         availability_df=availability_df,
         leaves_df=leaves_df,
         holidays_df=holidays_df,
+        role_dept_pools_df=role_dept_pools_df,
+        dept_compat_df=dept_compat_df,
     )
 
 if __name__ == "__main__":

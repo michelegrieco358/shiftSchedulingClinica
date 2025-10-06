@@ -9,6 +9,7 @@ rest_rules:
 
 defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
+  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
   contract_hours_by_role_h:
     infermiere: 168
     oss: 168
