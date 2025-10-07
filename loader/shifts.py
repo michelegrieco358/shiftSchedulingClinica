@@ -272,6 +272,17 @@ def _is_night_shift(
     return False
 
 
+def _local_day_start(calendar_date: pd.Timestamp, tz: ZoneInfo) -> pd.Timestamp:
+    """Restituisce la mezzanotte locale (timezone-aware) del giorno indicato."""
+
+    ts = pd.Timestamp(calendar_date)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(tz)
+    else:
+        ts = ts.tz_convert(tz)
+    return ts.normalize()
+
+
 def build_shift_slots(
     month_plan_df: pd.DataFrame,
     shifts_df: pd.DataFrame,
@@ -374,15 +385,16 @@ def build_shift_slots(
         crosses_midnight = bool(end_time < start_time)
         duration_min = _compute_duration_minutes(start_time, end_time)
 
-        date_ts: pd.Timestamp = pd.Timestamp(calendar_date)
-        start_dt = (date_ts.to_pydatetime().replace(tzinfo=tz) + start_time.to_pytimedelta())
-        end_day = date_ts + (pd.to_timedelta(1, unit="D") if crosses_midnight else pd.to_timedelta(0))
-        end_dt = (end_day.to_pydatetime().replace(tzinfo=tz) + end_time.to_pytimedelta())
+        day_start = _local_day_start(calendar_date, tz)
+        start_dt = day_start + start_time
+        end_dt = day_start + (
+            pd.to_timedelta(1, unit="D") if crosses_midnight else pd.Timedelta(0)
+        ) + end_time
 
         rows.append(
             {
                 "data": mp_row.get("data"),
-                "data_dt": date_ts,
+                "data_dt": pd.Timestamp(calendar_date),
                 "reparto_id": reparto_id,
                 "shift_code": shift_code,
                 "coverage_code": coverage_code,
