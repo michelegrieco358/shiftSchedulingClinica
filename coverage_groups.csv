@@ -1,8 +1,6 @@
-codice,turno,gruppo,total_min,ruoli_totale
+coverage_code,shift_code,gruppo,total_min,ruoli_totale
 S,M,000-Tetto,8,infermiere|oss
 S,M,001-Caposala,2,caposala
 S,P,000-Tetto,5,infermiere|oss
 S,N,000-Tetto,2,infermiere|oss
-T,M,000-Tetto,6,infermiere|oss
-T,P,000-Tetto,4,infermiere|oss
-T,N,000-Tetto,2,infermiere|oss
+T,N,000-Tetto,3,infermiere|oss
