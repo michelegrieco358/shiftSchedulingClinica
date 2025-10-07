@@ -16,6 +16,7 @@ from .utils import (
 def load_employees(
     path: str,
     defaults: dict[str, Any],
+    role_defaults: dict[str, Any],
     weeks_in_horizon: int,
     days_in_horizon: int,
 ) -> pd.DataFrame:
@@ -171,6 +172,144 @@ def load_employees(
         week_cap_hours.append(week_hours)
     df["max_week_min"] = [to_min_from_hours(v) for v in week_cap_hours]
 
+    def _coerce_bool(value: Any, label: str, allow_empty: bool = False) -> bool | None:
+        """Converte un valore generico in bool, opzionalmente accettando vuoti."""
+        if value is None:
+            if allow_empty:
+                return None
+            raise LoaderError(f"{label} mancante")
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s == "":
+                if allow_empty:
+                    return None
+                raise LoaderError(f"{label} mancante")
+            if s in {"true", "1", "yes", "y", "si", "s"}:
+                return True
+            if s in {"false", "0", "no", "n"}:
+                return False
+        elif isinstance(value, (int, float)):
+            if value in {0, 1}:
+                return bool(int(value))
+        elif isinstance(value, bool):
+            return value
+        raise LoaderError(f"{label}: valore booleano non riconosciuto ({value!r})")
+
+    def _coerce_nonneg_int(
+        value: Any, label: str, allow_empty: bool = False
+    ) -> int | None:
+        """Converte un valore in intero non negativo, opzionalmente accettando vuoti."""
+        if value is None:
+            if allow_empty:
+                return None
+            raise LoaderError(f"{label} mancante")
+        if isinstance(value, str):
+            s = value.strip()
+            if s == "":
+                if allow_empty:
+                    return None
+                raise LoaderError(f"{label} mancante")
+            try:
+                num = float(s)
+            except ValueError as exc:
+                raise LoaderError(f"{label}: valore non numerico ({value!r})") from exc
+        else:
+            try:
+                num = float(value)
+            except (TypeError, ValueError) as exc:
+                raise LoaderError(f"{label}: valore non numerico ({value!r})") from exc
+        if num < 0:
+            raise LoaderError(f"{label}: valore negativo non ammesso ({num})")
+        return int(round(num))
+
+    night_defaults = defaults.get("night", {}) or {}
+    global_can_work = _coerce_bool(
+        night_defaults.get("can_work_night"),
+        "config: defaults.night.can_work_night",
+    )
+    global_max_week = _coerce_nonneg_int(
+        night_defaults.get("max_per_week"),
+        "config: defaults.night.max_per_week",
+    )
+    global_max_month = _coerce_nonneg_int(
+        night_defaults.get("max_per_month"),
+        "config: defaults.night.max_per_month",
+    )
+
+    can_col_present = "can_work_night" in df.columns
+    week_col_present = "max_nights_week" in df.columns
+    month_col_present = "max_nights_month" in df.columns
+
+    resolved_can: list[bool] = []
+    resolved_week: list[int] = []
+    resolved_month: list[int] = []
+
+    for idx, row in df.iterrows():
+        role = str(row["ruolo"]).strip()
+        role_cfg = role_defaults.get(role, {}) or {}
+
+        role_can = _coerce_bool(
+            role_cfg.get("can_work_night"),
+            f"config: roles.{role}.can_work_night",
+            allow_empty=True,
+        )
+        if role_can is None:
+            role_can = global_can_work
+
+        role_night_cfg = role_cfg.get("night", {}) or {}
+        role_week = _coerce_nonneg_int(
+            role_night_cfg.get("max_per_week"),
+            f"config: roles.{role}.night.max_per_week",
+            allow_empty=True,
+        )
+        if role_week is None:
+            role_week = global_max_week
+        role_month = _coerce_nonneg_int(
+            role_night_cfg.get("max_per_month"),
+            f"config: roles.{role}.night.max_per_month",
+            allow_empty=True,
+        )
+        if role_month is None:
+            role_month = global_max_month
+
+        emp_can = role_can
+        if can_col_present:
+            emp_can_override = _coerce_bool(
+                row["can_work_night"],
+                "employees.csv: can_work_night",
+                allow_empty=True,
+            )
+            if emp_can_override is not None:
+                emp_can = emp_can_override
+
+        emp_week = role_week
+        if week_col_present:
+            emp_week_override = _coerce_nonneg_int(
+                row["max_nights_week"],
+                "employees.csv: max_nights_week",
+                allow_empty=True,
+            )
+            if emp_week_override is not None:
+                emp_week = emp_week_override
+
+        emp_month = role_month
+        if month_col_present:
+            emp_month_override = _coerce_nonneg_int(
+                row["max_nights_month"],
+                "employees.csv: max_nights_month",
+                allow_empty=True,
+            )
+            if emp_month_override is not None:
+                emp_month = emp_month_override
+
+        resolved_can.append(bool(emp_can))
+        resolved_week.append(int(emp_week))
+        resolved_month.append(int(emp_month))
+
+    df["can_work_night"] = resolved_can
+    df["max_nights_week"] = resolved_week
+    df["max_nights_month"] = resolved_month
+
     def get_int_with_default(col_name: str, default_val: int) -> pd.Series:
         """Estrae colonna intera con fallback a default, validando non-negativi."""
         if col_name in df.columns:
@@ -188,13 +327,6 @@ def load_employees(
             )
         return vals.round().astype(int)
 
-    df["max_nights_week"] = get_int_with_default(
-        "max_nights_week", int(defaults.get("max_nights_week", 3))
-    )
-    df["max_nights_month"] = get_int_with_default(
-        "max_nights_month", int(defaults.get("max_nights_month", 8))
-    )
-
     df["saturday_count_ytd"] = get_int_with_default("saturday_count_ytd", 0)
     df["sunday_count_ytd"] = get_int_with_default("sunday_count_ytd", 0)
     df["holiday_count_ytd"] = get_int_with_default("holiday_count_ytd", 0)
@@ -209,6 +341,7 @@ def load_employees(
             "saldo_init_min",
             "max_month_min",
             "max_week_min",
+            "can_work_night",
             "max_nights_week",
             "max_nights_month",
             "saturday_count_ytd",

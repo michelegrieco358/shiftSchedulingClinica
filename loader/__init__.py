@@ -80,6 +80,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     employees_df = load_employees(
         os.path.join(data_dir, "employees.csv"),
         defaults,
+        cfg.get("roles", {}) or {},
         weeks_in_horizon,
         horizon_days,
     )

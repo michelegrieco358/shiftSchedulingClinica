@@ -135,7 +135,11 @@ class ValidationResult:
 
 
 def _check_employees(
-    path: Path, defaults: dict, weeks_in_horizon: int, horizon_days: int
+    path: Path,
+    defaults: dict,
+    role_defaults: dict,
+    weeks_in_horizon: int,
+    horizon_days: int,
 ) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
     _require_columns(
@@ -160,6 +164,68 @@ def _check_employees(
 
     allowed_roles = _resolve_allowed_roles(defaults, {row["ruolo"] for row in rows})
     allowed_departments = _resolve_allowed_departments(defaults)
+
+    def _coerce_bool(value, label: str, allow_empty: bool = False) -> bool | None:
+        if value is None:
+            if allow_empty:
+                return None
+            raise ValidationError(f"{label} mancante")
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s == "":
+                if allow_empty:
+                    return None
+                raise ValidationError(f"{label} mancante")
+            if s in {"true", "1", "yes", "y", "si", "s"}:
+                return True
+            if s in {"false", "0", "no", "n"}:
+                return False
+        elif isinstance(value, (int, float)):
+            if value in {0, 1}:
+                return bool(int(value))
+        elif isinstance(value, bool):
+            return value
+        raise ValidationError(f"{label}: valore booleano non riconosciuto ({value!r})")
+
+    def _coerce_nonneg_int(
+        value, label: str, allow_empty: bool = False
+    ) -> int | None:
+        if value is None:
+            if allow_empty:
+                return None
+            raise ValidationError(f"{label} mancante")
+        if isinstance(value, str):
+            s = value.strip()
+            if s == "":
+                if allow_empty:
+                    return None
+                raise ValidationError(f"{label} mancante")
+            try:
+                num = float(s)
+            except ValueError as exc:
+                raise ValidationError(f"{label}: valore non numerico ({value!r})") from exc
+        else:
+            try:
+                num = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"{label}: valore non numerico ({value!r})") from exc
+        if num < 0:
+            raise ValidationError(f"{label}: valore negativo non ammesso ({num})")
+        return int(round(num))
+
+    night_defaults = defaults.get("night", {}) or {}
+    global_can_work = _coerce_bool(
+        night_defaults.get("can_work_night"),
+        "config: defaults.night.can_work_night",
+    )
+    global_max_week = _coerce_nonneg_int(
+        night_defaults.get("max_per_week"),
+        "config: defaults.night.max_per_week",
+    )
+    global_max_month = _coerce_nonneg_int(
+        night_defaults.get("max_per_month"),
+        "config: defaults.night.max_per_month",
+    )
 
     for row in rows:
         role = row["ruolo"].strip()
@@ -208,12 +274,58 @@ def _check_employees(
                     f"{path.name}: max_week_hours_h inferiore alle ore teoriche settimanali per employee_id {row['employee_id']}"
                 )
 
-        for col, default_val in (
-            ("max_nights_week", defaults.get("max_nights_week", 3)),
-            ("max_nights_month", defaults.get("max_nights_month", 8)),
-        ):
-            val = row.get(col, "") or str(default_val)
-            _parse_float(val, f"{path.name}: {col}")
+        role_cfg = role_defaults.get(role, {}) or {}
+        role_can = _coerce_bool(
+            role_cfg.get("can_work_night"),
+            f"config: roles.{role}.can_work_night",
+            allow_empty=True,
+        )
+        if role_can is None:
+            role_can = global_can_work
+
+        role_night_cfg = role_cfg.get("night", {}) or {}
+        role_week = _coerce_nonneg_int(
+            role_night_cfg.get("max_per_week"),
+            f"config: roles.{role}.night.max_per_week",
+            allow_empty=True,
+        )
+        if role_week is None:
+            role_week = global_max_week
+        role_month = _coerce_nonneg_int(
+            role_night_cfg.get("max_per_month"),
+            f"config: roles.{role}.night.max_per_month",
+            allow_empty=True,
+        )
+        if role_month is None:
+            role_month = global_max_month
+
+        emp_can = _coerce_bool(
+            row.get("can_work_night", ""),
+            f"{path.name}: can_work_night",
+            allow_empty=True,
+        )
+        if emp_can is None:
+            emp_can = role_can
+
+        emp_week = _coerce_nonneg_int(
+            row.get("max_nights_week", ""),
+            f"{path.name}: max_nights_week",
+            allow_empty=True,
+        )
+        if emp_week is None:
+            emp_week = role_week
+
+        emp_month = _coerce_nonneg_int(
+            row.get("max_nights_month", ""),
+            f"{path.name}: max_nights_month",
+            allow_empty=True,
+        )
+        if emp_month is None:
+            emp_month = role_month
+
+        # Le variabili finali (emp_can, emp_week, emp_month) vengono
+        # calcolate per intercettare valori non validi. Nessun controllo
+        # aggiuntivo richiesto oltre alla validazione effettuata.
 
         for ytd_col in ("saturday_count_ytd", "sunday_count_ytd", "holiday_count_ytd"):
             val = row.get(ytd_col, "0") or "0"
@@ -631,7 +743,11 @@ def run_checks(config_path: Path, data_dir: Path) -> ValidationResult:
         )
 
     employees, emp_summary = _check_employees(
-        data_dir / "employees.csv", defaults, weeks_in_horizon, horizon_days
+        data_dir / "employees.csv",
+        defaults,
+        cfg.get("roles", {}) or {},
+        weeks_in_horizon,
+        horizon_days,
     )
     shifts, shift_summary = _check_shifts(data_dir / "shifts.csv")
     shift_role_rows, shift_role_summary = _check_shift_role(

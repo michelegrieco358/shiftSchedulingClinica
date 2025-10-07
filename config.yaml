@@ -14,5 +14,19 @@ defaults:
     infermiere: 168
     oss: 168
     caposala: 168
-  max_nights_week: 3
-  max_nights_month: 8
+  night:
+    can_work_night: true
+    max_per_week: 2
+    max_per_month: 8
+roles:
+  infermiere:
+    can_work_night: true
+    night:
+      max_per_week: 2
+      max_per_month: 8
+  oss:
+    can_work_night: true
+  caposala:
+    can_work_night: false
+shift_types:
+  night_codes: ["N"]
