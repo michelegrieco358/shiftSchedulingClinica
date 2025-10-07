@@ -15,6 +15,7 @@ from .availability import load_availability
 from .calendar import attach_calendar, build_calendar
 from .config import load_config, load_holidays
 from .coverage import (
+    build_slot_requirements,
     expand_requirements,
     load_coverage_groups,
     load_coverage_roles,
@@ -28,7 +29,12 @@ from .employees import (
 )
 from .history import load_history
 from .leaves import load_leaves
-from .shifts import load_shift_role_eligibility, load_shifts
+from .shifts import (
+    build_shift_slots,
+    load_department_shift_map,
+    load_shift_role_eligibility,
+    load_shifts,
+)
 from .utils import LoaderError, _parse_date
 
 
@@ -38,6 +44,8 @@ class LoadedData:
     calendar_df: pd.DataFrame
     employees_df: pd.DataFrame
     shifts_df: pd.DataFrame
+    shift_slots_df: pd.DataFrame
+    slot_requirements_df: pd.DataFrame
     eligibility_df: pd.DataFrame
     month_plan_df: pd.DataFrame
     groups_total_expanded: pd.DataFrame
@@ -85,6 +93,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         horizon_days,
     )
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
+    dept_shift_map_df = load_department_shift_map(
+        os.path.join(data_dir, "reparto_shift_map.csv"), defaults, shifts_df
+    )
     eligibility_df = load_shift_role_eligibility(
         os.path.join(data_dir, "shift_role_eligibility.csv"), employees_df, shifts_df, defaults
     )
@@ -98,18 +109,25 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         role_dept_pools_df,
         employees_df,
     )
-    month_plan_df = load_month_plan(os.path.join(data_dir, "month_plan.csv"), shifts_df)
+    month_plan_df = load_month_plan(
+        os.path.join(data_dir, "month_plan.csv"), shifts_df, defaults
+    )
     groups_df = load_coverage_groups(os.path.join(data_dir, "coverage_groups.csv"))
     roles_df = load_coverage_roles(os.path.join(data_dir, "coverage_roles.csv"))
     validate_groups_roles(groups_df, roles_df, eligibility_df)
 
     month_plan_df = attach_calendar(month_plan_df, calendar_df)
+    shift_slots_df = build_shift_slots(
+        month_plan_df, shifts_df, dept_shift_map_df, defaults
+    )
 
     groups_total_expanded, groups_role_min_expanded = expand_requirements(
         month_plan_df, groups_df, roles_df
     )
     groups_total_expanded = attach_calendar(groups_total_expanded, calendar_df)
     groups_role_min_expanded = attach_calendar(groups_role_min_expanded, calendar_df)
+
+    slot_requirements_df = build_slot_requirements(shift_slots_df, roles_df)
 
     history_df = load_history(
         os.path.join(data_dir, "history.csv"),
@@ -135,6 +153,8 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         calendar_df=calendar_df,
         employees_df=employees_df,
         shifts_df=shifts_df,
+        shift_slots_df=shift_slots_df,
+        slot_requirements_df=slot_requirements_df,
         eligibility_df=eligibility_df,
         month_plan_df=month_plan_df,
         groups_total_expanded=groups_total_expanded,

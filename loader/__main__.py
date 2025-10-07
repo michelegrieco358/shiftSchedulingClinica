@@ -28,6 +28,8 @@ def main() -> None:
     print("OK: caricati e costruiti i dati.")
     print(f"- employees: {len(data.employees_df)}")
     print(f"- month_plan righe: {len(data.month_plan_df)}")
+    print(f"- shift slots: {len(data.shift_slots_df)}")
+    print(f"- slot requirements: {len(data.slot_requirements_df)}")
     print(f"- coverage groups (espansi): {len(data.groups_total_expanded)}")
     print(f"- coverage role min (espansi): {len(data.groups_role_min_expanded)}")
     print(f"- calendar giorni: {len(data.calendar_df)}")
@@ -44,6 +46,10 @@ def main() -> None:
         os.makedirs(outdir, exist_ok=True)
         data.calendar_df.to_csv(os.path.join(outdir, "calendar.csv"), index=False)
         data.month_plan_df.to_csv(os.path.join(outdir, "month_plan_with_calendar.csv"), index=False)
+        data.shift_slots_df.to_csv(os.path.join(outdir, "shift_slots.csv"), index=False)
+        data.slot_requirements_df.to_csv(
+            os.path.join(outdir, "slot_requirements.csv"), index=False
+        )
         data.groups_total_expanded.to_csv(
             os.path.join(outdir, "groups_total_expanded.csv"), index=False
         )
