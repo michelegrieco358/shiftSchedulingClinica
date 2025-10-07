@@ -27,6 +27,7 @@ from .employees import (
     load_employees,
     load_role_dept_pools,
 )
+from .gap_pairs import build_gap_pairs
 from .history import load_history
 from .leaves import load_leaves
 from .shifts import (
@@ -57,6 +58,7 @@ class LoadedData:
     holidays_df: pd.DataFrame
     role_dept_pools_df: pd.DataFrame
     dept_compat_df: pd.DataFrame
+    gap_pairs_df: pd.DataFrame
 
 
 def load_all(config_path: str, data_dir: str) -> LoadedData:
@@ -129,6 +131,25 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
 
     slot_requirements_df = build_slot_requirements(shift_slots_df, roles_df)
 
+    rest_rules = cfg.get("rest_rules", {})
+    max_gap_window = max(
+        [
+            value
+            for value in (
+                rest_rules.get("post_night_rest_h"),
+                rest_rules.get("weekly_rest_min_h"),
+                rest_rules.get("min_between_shifts_h"),
+            )
+            if isinstance(value, (int, float)) and value > 0
+        ]
+        or [15]
+    )
+    gap_pairs_df = build_gap_pairs(
+        shift_slots_df,
+        max_check_window_h=int(max_gap_window),
+        add_debug=False,
+    )
+
     history_df = load_history(
         os.path.join(data_dir, "history.csv"),
         employees_df,
@@ -166,6 +187,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         holidays_df=holidays_df,
         role_dept_pools_df=role_dept_pools_df,
         dept_compat_df=dept_compat_df,
+        gap_pairs_df=gap_pairs_df,
     )
 
 

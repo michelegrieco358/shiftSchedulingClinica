@@ -38,6 +38,7 @@ def main() -> None:
     print(f"- leave days: {len(data.leaves_days_df)}")
     print(f"- history righe: {len(data.history_df)}")
     print(f"- eligibility coppie (turno,ruolo): {len(data.eligibility_df)}")
+    print(f"- gap pairs: {len(data.gap_pairs_df)}")
     if not data.holidays_df.empty:
         print(f"- holidays caricati: {len(data.holidays_df)}")
 
@@ -67,6 +68,7 @@ def main() -> None:
         data.eligibility_df.to_csv(
             os.path.join(outdir, "shift_role_eligibility_processed.csv"), index=False
         )
+        data.gap_pairs_df.to_csv(os.path.join(outdir, "gap_pairs.csv"), index=False)
         print(f"Esportati CSV di debug in: {outdir}")
 
 
