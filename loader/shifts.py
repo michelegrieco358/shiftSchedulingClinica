@@ -5,10 +5,11 @@ from typing import Any
 
 import pandas as pd
 
-from .utils import LoaderError, _ensure_cols, TURNI_DOMANDA
+from .utils import LoaderError, _ensure_cols, TURNI_DOMANDA, _resolve_allowed_roles
 
 
 def load_shifts(path: str) -> pd.DataFrame:
+    """Carica e valida turni dal CSV con controlli su orari e durate."""
     hhmm = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
     df = pd.read_csv(path, dtype=str).fillna("")
@@ -41,9 +42,10 @@ def load_shifts(path: str) -> pd.DataFrame:
 
     zero_duration_shifts = {"R", "SN", "F"}
     mask_zero = df["shift_id"].isin(zero_duration_shifts)
-    if not df.loc[mask_zero, "duration_min"].eq(0).all() or not df.loc[
-        mask_zero, "crosses_midnight"
-    ].eq(0).all():
+    if (
+        not df.loc[mask_zero, "duration_min"].eq(0).all()
+        or not df.loc[mask_zero, "crosses_midnight"].eq(0).all()
+    ):
         raise LoaderError(
             "shifts.csv: R, SN e F devono avere duration_min=0 e crosses_midnight=0"
         )
@@ -60,8 +62,12 @@ def load_shifts(path: str) -> pd.DataFrame:
             f"shifts.csv: turni con duration_min <= 0 non ammessi (eccetto R/SN): {bad}"
         )
 
-    bad_start = df.loc[mask_nzero, "start"].apply(lambda s: bool(hhmm.fullmatch(s))).eq(False)
-    bad_end = df.loc[mask_nzero, "end"].apply(lambda s: bool(hhmm.fullmatch(s))).eq(False)
+    bad_start = df.loc[mask_nzero, "start"].apply(
+        lambda s: bool(hhmm.fullmatch(s))
+    ).eq(False)
+    bad_end = df.loc[mask_nzero, "end"].apply(
+        lambda s: bool(hhmm.fullmatch(s))
+    ).eq(False)
     if bad_start.any() or bad_end.any():
         bad_rows = df.loc[mask_nzero & (bad_start | bad_end), ["shift_id", "start", "end"]]
         raise LoaderError(
@@ -69,6 +75,7 @@ def load_shifts(path: str) -> pd.DataFrame:
         )
 
     def to_minutes(s: str) -> int:
+        """Converte stringa HH:MM in minuti totali."""
         h, m = s.split(":")
         return int(h) * 60 + int(m)
 
@@ -86,7 +93,8 @@ def load_shifts(path: str) -> pd.DataFrame:
                 f"shifts.csv: per turno {sid} crosses_midnight=1 ma end >= start ({e} >= {s})"
             )
 
-    def to_timedelta_or_nat(s: str):
+    def to_timedelta_or_nat(s: str) -> pd.Timedelta | pd.NaTType:
+        """Converte stringa HH:MM in timedelta o NaT se vuota."""
         if not s:
             return pd.NaT
         h, m = s.split(":")
@@ -107,8 +115,9 @@ def load_shifts(path: str) -> pd.DataFrame:
 
 
 def load_shift_role_eligibility(
-    path: str, employees_df: pd.DataFrame, shifts_df: pd.DataFrame
+    path: str, employees_df: pd.DataFrame, shifts_df: pd.DataFrame, defaults: dict
 ) -> pd.DataFrame:
+    """Carica e valida l'idoneità dei ruoli per ogni turno."""
     df = pd.read_csv(path, dtype=str).fillna("")
     _ensure_cols(df, {"shift_id", "ruolo"}, "shift_role_eligibility.csv")
 
@@ -126,11 +135,13 @@ def load_shift_role_eligibility(
             f"shift_role_eligibility.csv: ruolo vuoto nelle righe (prime occorrenze): {bad}"
         )
 
-    known_roles = set(employees_df["ruolo"].unique())
+    # Usa config come fonte di verità per i ruoli ammessi
+    allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=employees_df["ruolo"].unique())
+    known_roles = set(allowed_roles)
     bad_roles = sorted(set(df["ruolo"].unique()) - known_roles)
     if bad_roles:
         raise LoaderError(
-            "shift_role_eligibility.csv: ruoli sconosciuti rispetto a employees.csv: "
+            "shift_role_eligibility.csv: ruoli non ammessi rispetto alla config: "
             f"{bad_roles}"
         )
 

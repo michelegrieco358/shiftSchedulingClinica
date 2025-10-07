@@ -14,10 +14,12 @@ class LoaderError(Exception):
 
 
 def _parse_date(s: str) -> date:
+    """Converte stringa ISO (YYYY-MM-DD) in oggetto date."""
     return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
 
 
 def _ensure_cols(df: pd.DataFrame, required: Set[str], label: str) -> None:
+    """Verifica che il DataFrame abbia tutte le colonne richieste."""
     missing = required - set(df.columns)
     if missing:
         raise LoaderError(f"{label}: colonne mancanti {sorted(missing)}")
@@ -26,6 +28,7 @@ def _ensure_cols(df: pd.DataFrame, required: Set[str], label: str) -> None:
 def _resolve_allowed_roles(
     defaults: dict, fallback_roles: Iterable[str] | None = None
 ) -> list[str]:
+    """Risolve e normalizza la lista dei ruoli ammessi dalla configurazione."""
     allowed_roles_cfg = defaults.get("allowed_roles", None)
     roles: list[str]
     if isinstance(allowed_roles_cfg, str):
@@ -52,6 +55,7 @@ def _resolve_allowed_roles(
 
 
 def _resolve_allowed_departments(defaults: dict) -> list[str]:
+    """Risolve e normalizza la lista dei reparti ammessi dalla configurazione."""
     departments_cfg = defaults.get("departments", None)
     if isinstance(departments_cfg, str):
         departments = [

@@ -14,6 +14,7 @@ from .utils import (
 
 
 def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
+    """Carica e valida dati dipendenti con ore, limiti e contatori."""
     df = pd.read_csv(path, dtype=str).fillna("")
 
     _ensure_cols(
@@ -58,6 +59,7 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
         )
 
     def parse_hours_nonneg(x, field_name: str) -> float:
+        """Converte valore in ore float non negativo con validazione."""
         s = str(x).strip()
         try:
             v = float(s)
@@ -70,9 +72,11 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
         return v
 
     def to_min_from_hours(v_hours: float) -> int:
+        """Converte ore in minuti arrotondando."""
         return int(round(v_hours * 60.0))
 
     def parse_hours_allow_negative(x, field_name: str) -> float:
+        """Converte valore in ore float ammettendo negativi."""
         s = str(x).strip()
         try:
             return float(s)
@@ -106,6 +110,7 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
     )
 
     def get_hours_with_default(col_name: str, default_val) -> pd.Series:
+        """Estrae colonna ore con fallback a default, convertendo in minuti."""
         if col_name in df.columns:
             ser = df[col_name].astype(str).str.strip()
             ser = ser.where(ser != "", other=str(default_val))
@@ -122,6 +127,7 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
     )
 
     def get_int_with_default(col_name: str, default_val: int) -> pd.Series:
+        """Estrae colonna intera con fallback a default, validando non-negativi."""
         if col_name in df.columns:
             ser = df[col_name].astype(str).str.strip()
             ser = ser.where(ser != "", other=str(default_val))
@@ -170,6 +176,7 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
 def load_role_dept_pools(
     path: str, defaults: dict[str, Any], employees_df: pd.DataFrame
 ) -> pd.DataFrame:
+    """Carica pool di reparti per ogni ruolo (file opzionale)."""
     if not os.path.exists(path):
         return pd.DataFrame(columns=["ruolo", "pool_id", "reparto"])
 
@@ -220,6 +227,7 @@ def load_role_dept_pools(
 def build_department_compatibility(
     defaults: dict[str, Any], pools_df: pd.DataFrame, employees_df: pd.DataFrame
 ) -> pd.DataFrame:
+    """Costruisce matrice compatibilità tra reparti basata sui pool."""
     allowed_roles = _resolve_allowed_roles(
         defaults, fallback_roles=employees_df["ruolo"].unique()
     )
@@ -229,6 +237,7 @@ def build_department_compatibility(
     seen = set()
 
     def add(role: str, dept_home: str, dept_target: str) -> None:
+        """Aggiunge combinazione ruolo-reparto se non già presente."""
         key = (role, dept_home, dept_target)
         if key not in seen:
             seen.add(key)

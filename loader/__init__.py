@@ -67,7 +67,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     employees_df = load_employees(os.path.join(data_dir, "employees.csv"), defaults)
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
     eligibility_df = load_shift_role_eligibility(
-        os.path.join(data_dir, "shift_role_eligibility.csv"), employees_df, shifts_df
+        os.path.join(data_dir, "shift_role_eligibility.csv"), employees_df, shifts_df, defaults
     )
     role_dept_pools_df = load_role_dept_pools(
         os.path.join(data_dir, "role_dept_pools.csv"),
