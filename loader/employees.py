@@ -29,7 +29,7 @@ def load_employees(
             "employee_id",
             "nome",
             "ruolo",
-            "reparto",
+            "reparto_id",
             "ore_dovute_mese_h",
             "saldo_prog_iniziale_h",
         },
@@ -49,15 +49,17 @@ def load_employees(
         raise LoaderError(f"employees.csv: ruoli non ammessi rispetto alla config: {bad_roles}")
 
     allowed_departments = _resolve_allowed_departments(defaults)
-    df["reparto"] = df["reparto"].astype(str).str.strip()
-    if (df["reparto"] == "").any():
-        bad = df.loc[df["reparto"] == "", ["employee_id", "nome", "ruolo"]]
+    df["reparto_id"] = df["reparto_id"].astype(str).str.strip()
+    if (df["reparto_id"] == "").any():
+        bad = df.loc[df["reparto_id"] == "", ["employee_id", "nome", "ruolo"]]
         raise LoaderError(
-            "employees.csv: la colonna 'reparto' è obbligatoria e non può essere vuota. "
+            "employees.csv: la colonna 'reparto_id' è obbligatoria e non può essere vuota. "
             f"Righe interessate:\n{bad}"
         )
 
-    bad_departments = sorted(set(df["reparto"].unique()) - set(allowed_departments))
+    bad_departments = sorted(
+        set(df["reparto_id"].unique()) - set(allowed_departments)
+    )
     if bad_departments:
         raise LoaderError(
             "employees.csv: reparti non ammessi rispetto alla config (defaults.departments): "
@@ -331,24 +333,27 @@ def load_employees(
     df["sunday_count_ytd"] = get_int_with_default("sunday_count_ytd", 0)
     df["holiday_count_ytd"] = get_int_with_default("holiday_count_ytd", 0)
 
-    return df[
-        [
-            "employee_id",
-            "nome",
-            "ruolo",
-            "reparto",
-            "dovuto_min",
-            "saldo_init_min",
-            "max_month_min",
-            "max_week_min",
-            "can_work_night",
-            "max_nights_week",
-            "max_nights_month",
-            "saturday_count_ytd",
-            "sunday_count_ytd",
-            "holiday_count_ytd",
-        ]
+    ordered_cols = [
+        "employee_id",
+        "nome",
+        "ruolo",
+        "reparto_id",
+        "dovuto_min",
+        "saldo_init_min",
+        "max_month_min",
+        "max_week_min",
+        "can_work_night",
+        "max_nights_week",
+        "max_nights_month",
+        "saturday_count_ytd",
+        "sunday_count_ytd",
+        "holiday_count_ytd",
     ]
+    if "reparto_label" in df.columns:
+        df["reparto_label"] = df["reparto_label"].astype(str).str.strip()
+        ordered_cols.insert(ordered_cols.index("reparto_id") + 1, "reparto_label")
+
+    return df[ordered_cols]
 
 
 def load_role_dept_pools(
@@ -356,18 +361,20 @@ def load_role_dept_pools(
 ) -> pd.DataFrame:
     """Carica pool di reparti per ogni ruolo (file opzionale)."""
     if not os.path.exists(path):
-        return pd.DataFrame(columns=["ruolo", "pool_id", "reparto"])
+        return pd.DataFrame(columns=["ruolo", "pool_id", "reparto_id"])
 
     df = pd.read_csv(path, dtype=str).fillna("")
-    _ensure_cols(df, {"ruolo", "pool_id", "reparto"}, "role_dept_pools.csv")
+    _ensure_cols(df, {"ruolo", "pool_id", "reparto_id"}, "role_dept_pools.csv")
 
-    for col in ["ruolo", "pool_id", "reparto"]:
+    for col in ["ruolo", "pool_id", "reparto_id"]:
         df[col] = df[col].astype(str).str.strip()
 
-    if (df[["ruolo", "pool_id", "reparto"]] == "").any().any():
-        bad_rows = df.loc[(df[["ruolo", "pool_id", "reparto"]] == "").any(axis=1)]
+    if (df[["ruolo", "pool_id", "reparto_id"]] == "").any().any():
+        bad_rows = df.loc[
+            (df[["ruolo", "pool_id", "reparto_id"]] == "").any(axis=1)
+        ]
         raise LoaderError(
-            "role_dept_pools.csv: valori vuoti non ammessi nelle colonne ruolo/pool_id/reparto. "
+            "role_dept_pools.csv: valori vuoti non ammessi nelle colonne ruolo/pool_id/reparto_id. "
             f"Righe interessate:\n{bad_rows}"
         )
 
@@ -383,23 +390,23 @@ def load_role_dept_pools(
             f"{bad_roles}"
         )
 
-    bad_departments = sorted(set(df["reparto"].unique()) - allowed_departments)
+    bad_departments = sorted(set(df["reparto_id"].unique()) - allowed_departments)
     if bad_departments:
         raise LoaderError(
             "role_dept_pools.csv: reparti non ammessi rispetto alla config: "
             f"{bad_departments}"
         )
 
-    if df.duplicated(subset=["ruolo", "pool_id", "reparto"]).any():
+    if df.duplicated(subset=["ruolo", "pool_id", "reparto_id"]).any():
         dup = df[
-            df.duplicated(subset=["ruolo", "pool_id", "reparto"], keep=False)
-        ].sort_values(["ruolo", "pool_id", "reparto"])
+            df.duplicated(subset=["ruolo", "pool_id", "reparto_id"], keep=False)
+        ].sort_values(["ruolo", "pool_id", "reparto_id"])
         raise LoaderError(
-            "role_dept_pools.csv: duplicati non ammessi su (ruolo, pool_id, reparto):\n"
+            "role_dept_pools.csv: duplicati non ammessi su (ruolo, pool_id, reparto_id):\n"
             f"{dup}"
         )
 
-    return df.sort_values(["ruolo", "pool_id", "reparto"]).reset_index(drop=True)
+    return df.sort_values(["ruolo", "pool_id", "reparto_id"]).reset_index(drop=True)
 
 
 def build_department_compatibility(
@@ -432,7 +439,7 @@ def build_department_compatibility(
             if role_df is None:
                 continue
             for _, pool_df in role_df.groupby("pool_id"):
-                pool_departments = list(dict.fromkeys(pool_df["reparto"].tolist()))
+                pool_departments = list(dict.fromkeys(pool_df["reparto_id"].tolist()))
                 for dept_home in pool_departments:
                     for dept_target in pool_departments:
                         add(role, dept_home, dept_target)

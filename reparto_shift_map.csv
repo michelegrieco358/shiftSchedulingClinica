@@ -1,0 +1,4 @@
+reparto_id,shift_code,enabled,start_override,end_override
+ortopedia,P,true,,21:30
+ortopedia,N,false,,
+degenza,M,true,06:30,
