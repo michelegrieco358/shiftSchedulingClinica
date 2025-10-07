@@ -13,7 +13,12 @@ from .utils import (
 )
 
 
-def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
+def load_employees(
+    path: str,
+    defaults: dict[str, Any],
+    weeks_in_horizon: int,
+    days_in_horizon: int,
+) -> pd.DataFrame:
     """Carica e valida dati dipendenti con ore, limiti e contatori."""
     df = pd.read_csv(path, dtype=str).fillna("")
 
@@ -109,22 +114,62 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
         )
     )
 
-    def get_hours_with_default(col_name: str, default_val) -> pd.Series:
-        """Estrae colonna ore con fallback a default, convertendo in minuti."""
-        if col_name in df.columns:
-            ser = df[col_name].astype(str).str.strip()
-            ser = ser.where(ser != "", other=str(default_val))
-        else:
-            ser = pd.Series([str(default_val)] * len(df))
-        hours = ser.apply(lambda x: parse_hours_nonneg(x, col_name))
-        return hours.apply(to_min_from_hours)
+    if weeks_in_horizon <= 0:
+        raise LoaderError(
+            "employees.csv: impossibile calcolare i limiti settimanali senza settimane nell'orizzonte"
+        )
+    if days_in_horizon <= 0:
+        raise LoaderError(
+            "employees.csv: impossibile calcolare i limiti settimanali senza giorni nell'orizzonte"
+        )
 
-    df["max_week_min"] = get_hours_with_default(
-        "max_week_hours_h", defaults.get("max_week_hours_h", 60)
-    )
-    df["max_month_extra_min"] = get_hours_with_default(
-        "max_month_extra_h", defaults.get("max_month_extra_h", 40)
-    )
+    contract_hours = df["dovuto_min"].astype(float) / 60.0
+
+    # Limite mensile massimo (hard constraint)
+    month_cap_hours: list[float] = []
+    month_col_present = "max_month_hours_h" in df.columns
+    for idx, base_hours in enumerate(contract_hours):
+        override = ""
+        if month_col_present:
+            override = str(df.iloc[idx]["max_month_hours_h"]).strip()
+        if override:
+            cap_hours = parse_hours_nonneg(override, "max_month_hours_h")
+        else:
+            cap_hours = base_hours * 1.25
+        if cap_hours + 1e-9 < base_hours:
+            raise LoaderError(
+                "employees.csv: max_month_hours_h deve essere ≥ ore_dovute_mese_h per employee_id "
+                f"{df.iloc[idx]['employee_id']}"
+            )
+        month_cap_hours.append(cap_hours)
+    df["max_month_min"] = [to_min_from_hours(v) for v in month_cap_hours]
+
+    # Limite settimanale massimo (hard constraint)
+    week_cap_hours: list[float] = []
+    week_col_present = "max_week_hours_h" in df.columns
+    for idx, base_hours in enumerate(contract_hours):
+        # Ripartiamo le ore contrattuali su una settimana "media" del mese
+        # (ore_mese / giorni_orizzonte * 7). Il valore viene poi moltiplicato
+        # per 1.5 così da consentire straordinari senza concentrare tutto in
+        # un'unica settimana, applicando lo stesso cap anche alle settimane
+        # parziali all'inizio o alla fine dell'orizzonte.
+        weekly_theoretical = (
+            base_hours / days_in_horizon * 7.0 if days_in_horizon else 0.0
+        )
+        override = ""
+        if week_col_present:
+            override = str(df.iloc[idx]["max_week_hours_h"]).strip()
+        if override:
+            week_hours = parse_hours_nonneg(override, "max_week_hours_h")
+        else:
+            week_hours = weekly_theoretical * 1.5
+        if week_hours + 1e-9 < weekly_theoretical:
+            raise LoaderError(
+                "employees.csv: max_week_hours_h deve essere ≥ ore settimanali teoriche per employee_id "
+                f"{df.iloc[idx]['employee_id']}"
+            )
+        week_cap_hours.append(week_hours)
+    df["max_week_min"] = [to_min_from_hours(v) for v in week_cap_hours]
 
     def get_int_with_default(col_name: str, default_val: int) -> pd.Series:
         """Estrae colonna intera con fallback a default, validando non-negativi."""
@@ -162,8 +207,8 @@ def load_employees(path: str, defaults: dict[str, Any]) -> pd.DataFrame:
             "reparto",
             "dovuto_min",
             "saldo_init_min",
+            "max_month_min",
             "max_week_min",
-            "max_month_extra_min",
             "max_nights_week",
             "max_nights_month",
             "saturday_count_ytd",

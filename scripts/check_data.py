@@ -6,7 +6,7 @@ import ast
 import csv
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -69,6 +69,18 @@ def _parse_float(value: str, label: str, allow_negative: bool = False) -> float:
     return num
 
 
+def _count_weeks_in_horizon(start: date, end: date) -> int:
+    if end < start:
+        return 0
+    seen = set()
+    current = start
+    while current <= end:
+        week_start = current - timedelta(days=current.isoweekday() - 1)
+        seen.add(week_start)
+        current += timedelta(days=1)
+    return len(seen)
+
+
 def _resolve_allowed_roles(defaults: dict, fallback_roles: Iterable[str]) -> list[str]:
     allowed_cfg = defaults.get("allowed_roles")
     roles: list[str] = []
@@ -122,7 +134,9 @@ class ValidationResult:
     horizon_end: date
 
 
-def _check_employees(path: Path, defaults: dict) -> tuple[list[dict[str, str]], DatasetSummary]:
+def _check_employees(
+    path: Path, defaults: dict, weeks_in_horizon: int, horizon_days: int
+) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
     _require_columns(
         columns,
@@ -165,12 +179,36 @@ def _check_employees(path: Path, defaults: dict) -> tuple[list[dict[str, str]], 
 
         ore = row.get("ore_dovute_mese_h", "")
         saldo = row.get("saldo_prog_iniziale_h", "")
-        _parse_float(ore, f"{path.name}: ore_dovute_mese_h")
+        contract_hours = _parse_float(ore, f"{path.name}: ore_dovute_mese_h")
         _parse_float(saldo, f"{path.name}: saldo_prog_iniziale_h", allow_negative=True)
 
+        month_cap = row.get("max_month_hours_h", "").strip()
+        if month_cap:
+            month_hours = _parse_float(month_cap, f"{path.name}: max_month_hours_h")
+            if month_hours + 1e-9 < contract_hours:
+                raise ValidationError(
+                    f"{path.name}: max_month_hours_h deve essere ≥ ore_dovute_mese_h per employee_id {row['employee_id']}"
+                )
+
+        week_cap = row.get("max_week_hours_h", "").strip()
+        if week_cap:
+            if weeks_in_horizon <= 0:
+                raise ValidationError("config: orizzonte senza settimane per validare max_week_hours_h")
+            if horizon_days <= 0:
+                raise ValidationError("config: orizzonte senza giorni per validare max_week_hours_h")
+            week_hours = _parse_float(week_cap, f"{path.name}: max_week_hours_h")
+            # Stessa formula del loader: distribuzione delle ore contrattuali su
+            # una settimana "media" del mese (ore_mese / giorni_orizzonte * 7)
+            # così da applicare un cap uniforme anche alle settimane parziali.
+            weekly_theoretical = (
+                contract_hours / horizon_days * 7.0 if horizon_days else 0.0
+            )
+            if week_hours + 1e-9 < weekly_theoretical:
+                raise ValidationError(
+                    f"{path.name}: max_week_hours_h inferiore alle ore teoriche settimanali per employee_id {row['employee_id']}"
+                )
+
         for col, default_val in (
-            ("max_week_hours_h", defaults.get("max_week_hours_h", 60)),
-            ("max_month_extra_h", defaults.get("max_month_extra_h", 40)),
             ("max_nights_week", defaults.get("max_nights_week", 3)),
             ("max_nights_month", defaults.get("max_nights_month", 8)),
         ):
@@ -581,7 +619,20 @@ def run_checks(config_path: Path, data_dir: Path) -> ValidationResult:
 
     defaults = cfg.get("defaults", {}) or {}
 
-    employees, emp_summary = _check_employees(data_dir / "employees.csv", defaults)
+    weeks_in_horizon = _count_weeks_in_horizon(horizon_start, horizon_end)
+    if weeks_in_horizon <= 0:
+        raise ValidationError(
+            "config: orizzonte senza settimane valide (start_date > end_date?)"
+        )
+    horizon_days = (horizon_end - horizon_start).days + 1
+    if horizon_days <= 0:
+        raise ValidationError(
+            "config: orizzonte senza giorni validi (start_date > end_date?)"
+        )
+
+    employees, emp_summary = _check_employees(
+        data_dir / "employees.csv", defaults, weeks_in_horizon, horizon_days
+    )
     shifts, shift_summary = _check_shifts(data_dir / "shifts.csv")
     shift_role_rows, shift_role_summary = _check_shift_role(
         data_dir / "shift_role_eligibility.csv", employees, shifts

@@ -64,7 +64,25 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         start_date, end_date, holidays_df if not holidays_df.empty else None
     )
 
-    employees_df = load_employees(os.path.join(data_dir, "employees.csv"), defaults)
+    horizon_days = int(calendar_df["is_in_horizon"].sum())
+    weeks_in_horizon = (
+        calendar_df.loc[calendar_df["is_in_horizon"], "week_id"].nunique()
+    )
+    if weeks_in_horizon <= 0:
+        raise LoaderError(
+            "calendar: nessuna settimana trovata nell'orizzonte configurato"
+        )
+    if horizon_days <= 0:
+        raise LoaderError(
+            "calendar: nessun giorno trovato nell'orizzonte configurato"
+        )
+
+    employees_df = load_employees(
+        os.path.join(data_dir, "employees.csv"),
+        defaults,
+        weeks_in_horizon,
+        horizon_days,
+    )
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
     eligibility_df = load_shift_role_eligibility(
         os.path.join(data_dir, "shift_role_eligibility.csv"), employees_df, shifts_df, defaults
