@@ -14,7 +14,5 @@ defaults:
     infermiere: 168
     oss: 168
     caposala: 168
-  max_week_hours_h: 60
-  max_month_extra_h: 40
   max_nights_week: 3
   max_nights_month: 8
