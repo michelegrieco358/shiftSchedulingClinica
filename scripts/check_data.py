@@ -142,18 +142,22 @@ def _check_employees(
     horizon_days: int,
 ) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
-    _require_columns(
-        columns,
-        {
-            "employee_id",
-            "nome",
-            "ruolo",
-            "reparto",
-            "ore_dovute_mese_h",
-            "saldo_prog_iniziale_h",
-        },
-        path.name,
-    )
+    base_required = {
+        "employee_id",
+        "nome",
+        "ruolo",
+        "ore_dovute_mese_h",
+        "saldo_prog_iniziale_h",
+    }
+    if "reparto" in columns:
+        dept_col = "reparto"
+    elif "reparto_id" in columns:
+        dept_col = "reparto_id"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti {{'reparto' o 'reparto_id'}}"
+        )
+    _require_columns(columns, base_required | {dept_col}, path.name)
 
     ids = [row["employee_id"] for row in rows]
     duplicates = [item for item, count in Counter(ids).items() if count > 1]
@@ -233,7 +237,9 @@ def _check_employees(
             raise ValidationError(
                 f"{path.name}: ruolo non ammesso '{role}'. Ruoli ammessi: {allowed_roles}"
             )
-        dept = row["reparto"].strip()
+        dept = row.get(dept_col, "").strip()
+        if dept_col != "reparto":
+            row["reparto"] = dept
         if not dept:
             raise ValidationError(
                 f"{path.name}: reparto vuoto per employee_id {row['employee_id']}"
@@ -439,42 +445,127 @@ def _check_shift_role(
     return rows, DatasetSummary(label=path.name, rows=len(rows))
 
 
+
 def _check_month_plan(path: Path, shifts: list[dict[str, str]]) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
-    _require_columns(columns, {"data", "turno", "codice"}, path.name)
+    column_set = set(columns)
 
-    valid_turni = {"M", "P", "N"}
+    if {"turno", "codice"}.issubset(column_set):
+        shift_col = "turno"
+        coverage_col = "codice"
+        dept_col = "reparto" if "reparto" in column_set else None
+    elif {"shift_code", "coverage_code"}.issubset(column_set):
+        shift_col = "shift_code"
+        coverage_col = "coverage_code"
+        dept_col = "reparto_id" if "reparto_id" in column_set else None
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti per month_plan (attese 'turno/codice' oppure 'shift_code/coverage_code')"
+        )
+
+    required = {"data", shift_col, coverage_col}
+    if dept_col:
+        required.add(dept_col)
+    _require_columns(columns, required, path.name)
+
     shift_ids = {row["shift_id"] for row in shifts}
+    valid_turni = {"M", "P", "N"}
 
     for idx, row in enumerate(rows, start=2):
-        turno = row["turno"]
-        if turno not in valid_turni:
+        shift_value = row[shift_col].strip()
+        if not shift_value:
             raise ValidationError(
-                f"{path.name}: turno '{turno}' non ammesso alla riga {idx}. Ammessi: {sorted(valid_turni)}"
+                f"{path.name}: {shift_col} vuoto alla riga {idx}"
             )
-        if turno not in shift_ids:
+        if shift_value not in shift_ids:
             raise ValidationError(
-                f"{path.name}: turno '{turno}' non presente in shifts.csv"
+                f"{path.name}: {shift_col} '{shift_value}' non presente in shifts.csv"
             )
+        if shift_col == "turno" and shift_value not in valid_turni:
+            raise ValidationError(
+                f"{path.name}: turno '{shift_value}' non ammesso alla riga {idx}. Ammessi: {sorted(valid_turni)}"
+            )
+
+        coverage_value = row[coverage_col].strip()
+        if not coverage_value:
+            raise ValidationError(
+                f"{path.name}: {coverage_col} vuoto alla riga {idx}"
+            )
+
+        if dept_col:
+            dept_value = row[dept_col].strip()
+            if not dept_value:
+                raise ValidationError(
+                    f"{path.name}: {dept_col} vuoto alla riga {idx}"
+                )
+
         _parse_date(row["data"], f"{path.name}: data")
+
+    if shift_col != "turno":
+        for sid in sorted({"M", "P", "N"} & shift_ids):
+            if not any(r[shift_col].strip() == sid for r in rows):
+                raise ValidationError(
+                    f"{path.name}: nessuna riga con shift_code '{sid}' per copertura obbligatoria"
+                )
 
     return rows, DatasetSummary(label=path.name, rows=len(rows))
 
 
+
+
 def _check_coverage_groups(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
-    _require_columns(
-        columns,
-        {"codice", "turno", "gruppo", "total_min", "ruoli_totale"},
-        path.name,
-    )
+    column_set = set(columns)
+
+    if {"codice", "turno", "gruppo"}.issubset(column_set):
+        code_col = "codice"
+        shift_col = "turno"
+        dept_col = "reparto" if "reparto" in column_set else None
+    elif {"coverage_code", "shift_code", "gruppo"}.issubset(column_set):
+        code_col = "coverage_code"
+        shift_col = "shift_code"
+        dept_col = "reparto_id" if "reparto_id" in column_set else None
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti per coverage_groups (attese 'codice/turno' oppure 'coverage_code/shift_code')"
+        )
+
+    required = {code_col, shift_col, "gruppo", "total_min", "ruoli_totale"}
+    if dept_col:
+        required.add(dept_col)
+    _require_columns(columns, required, path.name)
 
     seen = set()
     for idx, row in enumerate(rows, start=2):
-        key = (row["codice"], row["turno"], row["gruppo"])
+        code = row[code_col].strip()
+        shift = row[shift_col].strip()
+        if code_col != "codice":
+            row["codice"] = code
+        if shift_col != "turno":
+            row["turno"] = shift
+
+        dept = ""
+        if dept_col:
+            dept = row[dept_col].strip()
+            if dept_col != "reparto":
+                row["reparto"] = dept
+            if not dept:
+                raise ValidationError(
+                    f"{path.name}: {dept_col} vuoto alla riga {idx}"
+                )
+        else:
+            dept = row.get("reparto", "").strip()
+            row["reparto"] = dept
+
+        if not code or not shift:
+            raise ValidationError(
+                f"{path.name}: codice o turno vuoto alla riga {idx}"
+            )
+
+        key = (row["codice"], row["turno"], row["reparto"], row["gruppo"])
         if key in seen:
             raise ValidationError(
-                f"{path.name}: duplicato per (codice, turno, gruppo) {key}"
+                f"{path.name}: duplicato per (codice, turno, reparto, gruppo) {key}"
             )
         seen.add(key)
         total_min = _parse_int(row["total_min"], f"{path.name}: total_min")
@@ -492,20 +583,56 @@ def _check_coverage_groups(path: Path) -> tuple[list[dict[str, str]], DatasetSum
     return rows, DatasetSummary(label=path.name, rows=len(rows))
 
 
+
 def _check_coverage_roles(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
-    _require_columns(
-        columns,
-        {"codice", "turno", "gruppo", "ruolo", "min_ruolo"},
-        path.name,
-    )
+    column_set = set(columns)
+
+    if {"codice", "turno", "gruppo", "ruolo"}.issubset(column_set):
+        code_col = "codice"
+        shift_col = "turno"
+        dept_col = "reparto" if "reparto" in column_set else None
+    elif {"coverage_code", "shift_code", "gruppo", "ruolo"}.issubset(column_set):
+        code_col = "coverage_code"
+        shift_col = "shift_code"
+        dept_col = "reparto_id" if "reparto_id" in column_set else None
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti per coverage_roles (attese 'codice/turno' oppure 'coverage_code/shift_code')"
+        )
+
+    required = {code_col, shift_col, "gruppo", "ruolo", "min_ruolo"}
+    if dept_col:
+        required.add(dept_col)
+    _require_columns(columns, required, path.name)
 
     seen = set()
-    for row in rows:
-        key = (row["codice"], row["turno"], row["gruppo"], row["ruolo"])
+    for idx, row in enumerate(rows, start=2):
+        code = row[code_col].strip()
+        shift = row[shift_col].strip()
+        role = row["ruolo"].strip()
+        if code_col != "codice":
+            row["codice"] = code
+        if shift_col != "turno":
+            row["turno"] = shift
+
+        dept = ""
+        if dept_col:
+            dept = row[dept_col].strip()
+            if dept_col != "reparto":
+                row["reparto"] = dept
+            if not dept:
+                raise ValidationError(
+                    f"{path.name}: {dept_col} vuoto alla riga {idx}"
+                )
+        else:
+            dept = row.get("reparto", "").strip()
+            row["reparto"] = dept
+
+        key = (row["codice"], row["turno"], row["reparto"], row["gruppo"], role)
         if key in seen:
             raise ValidationError(
-                f"{path.name}: duplicato per (codice, turno, gruppo, ruolo) {key}"
+                f"{path.name}: duplicato per (codice, turno, reparto, gruppo, ruolo) {key}"
             )
         seen.add(key)
         _parse_int(row["min_ruolo"], f"{path.name}: min_ruolo")
@@ -519,13 +646,13 @@ def _validate_groups_vs_roles(
     eligibility_pairs: set[tuple[str, str]],
 ) -> None:
     groups_index = {
-        (row["codice"], row["turno"], row["gruppo"]): row for row in groups
+        (row["codice"], row["turno"], row["reparto"], row["gruppo"]): row for row in groups
     }
     for row in roles:
-        key = (row["codice"], row["turno"], row["gruppo"])
+        key = (row["codice"], row["turno"], row["reparto"], row["gruppo"])
         if key not in groups_index:
             raise ValidationError(
-                "coverage_roles.csv: combinazione (codice, turno, gruppo) non definita in coverage_groups.csv"
+                "coverage_roles.csv: combinazione (codice, turno, reparto, gruppo) non definita in coverage_groups.csv"
             )
         pair = (row["turno"], row["ruolo"])
         if pair not in eligibility_pairs:
@@ -535,7 +662,11 @@ def _validate_groups_vs_roles(
 
     for key, grp in groups_index.items():
         allowed = set(grp["ruoli_totale_list"])
-        role_rows = [row for row in roles if (row["codice"], row["turno"], row["gruppo"]) == key]
+        role_rows = [
+            row
+            for row in roles
+            if (row["codice"], row["turno"], row["reparto"], row["gruppo"]) == key
+        ]
         for row in role_rows:
             if row["ruolo"] not in allowed:
                 raise ValidationError(
@@ -548,7 +679,6 @@ def _validate_groups_vs_roles(
             raise ValidationError(
                 "Incoerenza: somma min_ruolo supera total_min per {0}".format(key)
             )
-
 
 def _check_history(
     path: Path,
@@ -803,13 +933,13 @@ def main() -> None:
     try:
         result = run_checks(args.config, args.data_dir)
     except (ValidationError, FileNotFoundError) as exc:
-        print("❌ Controlli falliti:")
+        print('[FAIL] Controlli falliti:')
         print(str(exc))
         raise SystemExit(1)
 
     horizon_days = (result.horizon_end - result.horizon_start).days + 1
-    print("✅ Controlli completati con successo")
-    print(f"Orizzonte configurato: {result.horizon_start} → {result.horizon_end} ({horizon_days} giorni)")
+    print('[OK] Controlli completati con successo')
+    print(f"Orizzonte configurato: {result.horizon_start} -> {result.horizon_end} ({horizon_days} giorni)")
     for summary in result.summaries:
         print(f"- {summary.label}: {summary.rows} righe")
 

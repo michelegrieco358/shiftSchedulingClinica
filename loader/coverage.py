@@ -52,28 +52,42 @@ def load_month_plan(
 
     return df[["data", "data_dt", "reparto_id", "shift_code", "coverage_code"]]
 
-
 def load_coverage_groups(path: str) -> pd.DataFrame:
     """Carica la tabella dei gruppi di copertura."""
 
     df = pd.read_csv(path, dtype=str).fillna("")
     _ensure_cols(
         df,
-        {"coverage_code", "shift_code", "gruppo", "total_min", "ruoli_totale"},
+        {"coverage_code", "shift_code", "reparto_id", "gruppo", "total_min", "ruoli_totale"},
         "coverage_groups.csv",
     )
+
+    df["coverage_code"] = df["coverage_code"].astype(str).str.strip()
+    df["shift_code"] = df["shift_code"].astype(str).str.strip()
+    df["reparto_id"] = df["reparto_id"].astype(str).str.strip()
+    df["gruppo"] = df["gruppo"].astype(str).str.strip()
+
+    if (df["reparto_id"] == "").any():
+        bad = df.loc[df["reparto_id"] == "", ["coverage_code", "shift_code", "gruppo"]]
+        raise LoaderError(
+            "coverage_groups.csv: reparto_id mancante per combinazioni:\n"
+            f"{bad}"
+        )
+
     df["total_min"] = pd.to_numeric(df["total_min"], errors="raise").astype(int)
 
     def _split_roles(s: str) -> list[str]:
         return [x.strip() for x in str(s).split("|") if x.strip()]
 
     df["ruoli_totale_list"] = df["ruoli_totale"].apply(_split_roles)
-    if df.duplicated(subset=["coverage_code", "shift_code", "gruppo"]).any():
+    if df.duplicated(subset=["coverage_code", "shift_code", "reparto_id", "gruppo"]).any():
         dup = df[
-            df.duplicated(subset=["coverage_code", "shift_code", "gruppo"], keep=False)
-        ].sort_values(["coverage_code", "shift_code", "gruppo"])
+            df.duplicated(
+                subset=["coverage_code", "shift_code", "reparto_id", "gruppo"], keep=False
+            )
+        ].sort_values(["coverage_code", "shift_code", "reparto_id", "gruppo"])
         raise LoaderError(
-            "coverage_groups.csv: duplicati su (coverage_code,shift_code,gruppo):\n"
+            "coverage_groups.csv: duplicati su (coverage_code,shift_code,reparto_id,gruppo):\n"
             f"{dup}"
         )
     if df["ruoli_totale_list"].apply(len).eq(0).any():
@@ -90,18 +104,32 @@ def load_coverage_roles(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, dtype=str).fillna("")
     _ensure_cols(
         df,
-        {"coverage_code", "shift_code", "gruppo", "ruolo", "min_ruolo"},
+        {"coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo", "min_ruolo"},
         "coverage_roles.csv",
     )
+
+    df["coverage_code"] = df["coverage_code"].astype(str).str.strip()
+    df["shift_code"] = df["shift_code"].astype(str).str.strip()
+    df["reparto_id"] = df["reparto_id"].astype(str).str.strip()
+    df["gruppo"] = df["gruppo"].astype(str).str.strip()
+    df["ruolo"] = df["ruolo"].astype(str).str.strip()
+
+    if (df["reparto_id"] == "").any():
+        bad = df.loc[df["reparto_id"] == "", ["coverage_code", "shift_code", "gruppo", "ruolo"]]
+        raise LoaderError(
+            "coverage_roles.csv: reparto_id mancante per combinazioni:\n"
+            f"{bad}"
+        )
+
     df["min_ruolo"] = pd.to_numeric(df["min_ruolo"], errors="raise").astype(int)
-    if df.duplicated(subset=["coverage_code", "shift_code", "gruppo", "ruolo"]).any():
+    if df.duplicated(subset=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]).any():
         dup = df[
             df.duplicated(
-                subset=["coverage_code", "shift_code", "gruppo", "ruolo"], keep=False
+                subset=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"], keep=False
             )
-        ].sort_values(["coverage_code", "shift_code", "gruppo", "ruolo"])
+        ].sort_values(["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"])
         raise LoaderError(
-            "coverage_roles.csv: duplicati su (coverage_code,shift_code,gruppo,ruolo):\n"
+            "coverage_roles.csv: duplicati su (coverage_code,shift_code,reparto_id,gruppo,ruolo):\n"
             f"{dup}"
         )
     return df
@@ -110,24 +138,21 @@ def load_coverage_roles(path: str) -> pd.DataFrame:
 def validate_groups_roles(
     groups: pd.DataFrame, roles: pd.DataFrame, eligibility_df: pd.DataFrame
 ) -> None:
-    """Convalida la coerenza tra gruppi, ruoli e idoneità dei turni."""
+    """Convalida la coerenza tra gruppi, ruoli e idoneita dei turni."""
 
     r_join = roles.merge(
-        groups[["coverage_code", "shift_code", "gruppo", "ruoli_totale_list"]],
-        on=["coverage_code", "shift_code", "gruppo"],
+        groups[["coverage_code", "shift_code", "reparto_id", "gruppo", "ruoli_totale_list"]],
+        on=["coverage_code", "shift_code", "reparto_id", "gruppo"],
         how="left",
         indicator=True,
         validate="many_to_one",
     )
-    missing_grp = r_join[r_join["_merge"] == "left_only"][[
-        "coverage_code",
-        "shift_code",
-        "gruppo",
-        "ruolo",
-    ]].drop_duplicates()
+    missing_grp = r_join[r_join["_merge"] == "left_only"][
+        ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+    ].drop_duplicates()
     if not missing_grp.empty:
         raise LoaderError(
-            "coverage_roles.csv: (coverage_code,shift_code,gruppo) non definito in coverage_groups per:\n"
+            "coverage_roles.csv: (coverage_code,shift_code,reparto_id,gruppo) non definito in coverage_groups per:\n"
             f"{missing_grp}"
         )
 
@@ -137,12 +162,9 @@ def validate_groups_roles(
         how="left",
         indicator=True,
     )
-    bad = er[er["_merge"] == "left_only"][[
-        "coverage_code",
-        "shift_code",
-        "gruppo",
-        "ruolo",
-    ]].drop_duplicates()
+    bad = er[er["_merge"] == "left_only"][
+        ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+    ].drop_duplicates()
     if not bad.empty:
         raise LoaderError(
             "coverage_roles.csv: (shift_code,ruolo) non idoneo secondo shift_role_eligibility:\n"
@@ -152,10 +174,18 @@ def validate_groups_roles(
     rows = []
     for _, g in groups.iterrows():
         for ruolo in g["ruoli_totale_list"]:
-            rows.append((g["coverage_code"], g["shift_code"], g["gruppo"], ruolo))
+            rows.append(
+                (
+                    g["coverage_code"],
+                    g["shift_code"],
+                    g["reparto_id"],
+                    g["gruppo"],
+                    ruolo,
+                )
+            )
     if rows:
         total_roles_df = pd.DataFrame(
-            rows, columns=["coverage_code", "shift_code", "gruppo", "ruolo"]
+            rows, columns=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
         )
         tr = total_roles_df.merge(
             eligibility_df.rename(columns={"shift_id": "shift_code"}),
@@ -163,12 +193,9 @@ def validate_groups_roles(
             how="left",
             indicator=True,
         )
-        bad2 = tr[tr["_merge"] == "left_only"][[
-            "coverage_code",
-            "shift_code",
-            "gruppo",
-            "ruolo",
-        ]].drop_duplicates()
+        bad2 = tr[tr["_merge"] == "left_only"][
+            ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+        ].drop_duplicates()
         if not bad2.empty:
             raise LoaderError(
                 "coverage_groups.csv: ruoli_totale include ruoli non idonei per il turno:\n"
@@ -181,24 +208,24 @@ def validate_groups_roles(
     if not not_in_set.empty:
         raise LoaderError(
             "coverage_roles.csv: ruoli non inclusi in ruoli_totale_list del gruppo corrispondente:\n"
-            f"{not_in_set[['coverage_code','shift_code','gruppo','ruolo']].drop_duplicates()}"
+            f"{not_in_set[['coverage_code','shift_code','reparto_id','gruppo','ruolo']].drop_duplicates()}"
         )
 
     sums = (
-        roles.groupby(["coverage_code", "shift_code", "gruppo"], as_index=False)[
+        roles.groupby(["coverage_code", "shift_code", "reparto_id", "gruppo"], as_index=False)[
             "min_ruolo"
         ]
         .sum()
         .rename(columns={"min_ruolo": "sum_min_ruolo"})
     )
     chk = groups.merge(
-        sums, on=["coverage_code", "shift_code", "gruppo"], how="left"
+        sums, on=["coverage_code", "shift_code", "reparto_id", "gruppo"], how="left"
     ).fillna({"sum_min_ruolo": 0})
     viol = chk[chk["total_min"] < chk["sum_min_ruolo"]]
     if not viol.empty:
         raise LoaderError(
             "Incoerenza: total_min < somma(min_ruolo) per:\n"
-            f"{viol[['coverage_code','shift_code','gruppo','total_min','sum_min_ruolo']]}"
+            f"{viol[['coverage_code','shift_code','reparto_id','gruppo','total_min','sum_min_ruolo']]}"
         )
 
 
@@ -213,16 +240,16 @@ def expand_requirements(
 
     gt = month_plan_base.merge(
         groups,
-        on=["coverage_code", "shift_code"],
+        on=["coverage_code", "shift_code", "reparto_id"],
         how="left",
         validate="many_to_many",
     )
     if gt["gruppo"].isna().any():
         miss = gt[gt["gruppo"].isna()].drop_duplicates(
-            subset=["coverage_code", "shift_code"]
-        )[["coverage_code", "shift_code"]]
+            subset=["coverage_code", "shift_code", "reparto_id"]
+        )[["coverage_code", "shift_code", "reparto_id"]]
         raise LoaderError(
-            "month_plan contiene (coverage_code,shift_code) senza definizione in coverage_groups:\n"
+            "month_plan contiene (coverage_code,shift_code,reparto_id) senza definizione in coverage_groups:\n"
             f"{miss}"
         )
     gt["ruoli_totale_set"] = gt["ruoli_totale_list"].apply(lambda xs: "|".join(xs))
@@ -242,7 +269,7 @@ def expand_requirements(
 
     gr = month_plan_base.merge(
         roles,
-        on=["coverage_code", "shift_code"],
+        on=["coverage_code", "shift_code", "reparto_id"],
         how="left",
         validate="many_to_many",
     )
@@ -273,16 +300,16 @@ def build_slot_requirements(
         return pd.DataFrame(columns=["slot_id", "ruolo", "demand"])
 
     grouped = (
-        coverage_roles_df.groupby(["coverage_code", "shift_code", "ruolo"], as_index=False)[
-            "min_ruolo"
-        ]
+        coverage_roles_df.groupby(
+            ["coverage_code", "shift_code", "reparto_id", "ruolo"], as_index=False
+        )["min_ruolo"]
         .sum()
         .rename(columns={"min_ruolo": "demand"})
     )
 
     merged = slots_df.merge(
         grouped,
-        on=["coverage_code", "shift_code"],
+        on=["coverage_code", "shift_code", "reparto_id"],
         how="left",
     )
     merged = merged.dropna(subset=["demand"])
