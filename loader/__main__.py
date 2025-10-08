@@ -5,7 +5,7 @@ import os
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Loader clinica — Step A (v6)")
+    ap = argparse.ArgumentParser(description="Loader clinica - Step A (v6)")
     ap.add_argument("--config", type=str, default="config.yaml")
     ap.add_argument("--data-dir", type=str, default=".")
     ap.add_argument(
