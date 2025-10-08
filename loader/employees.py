@@ -14,6 +14,48 @@ from .utils import (
 )
 
 
+def _contract_hours_by_role(defaults_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalizza la mappatura ruolo→ore contrattuali dai defaults."""
+
+    if defaults_cfg is None:
+        defaults_cfg = {}
+    if not isinstance(defaults_cfg, dict):
+        raise LoaderError("config['defaults'] deve essere un dizionario valido")
+
+    contract_cfg = defaults_cfg.get("contract_hours_by_role_h")
+    if contract_cfg is None:
+        return {}
+    if not isinstance(contract_cfg, dict):
+        raise LoaderError(
+            "config['defaults']['contract_hours_by_role_h'] deve essere un dizionario"
+        )
+
+    normalized: dict[str, Any] = {}
+    for raw_key, value in contract_cfg.items():
+        key = str(raw_key).strip()
+        if key:
+            normalized[key] = value
+
+    return normalized
+
+
+def _require_contract_hours(
+    contract_by_role: dict[str, Any],
+    role: str,
+    *,
+    error_cls: type[Exception] = LoaderError,
+) -> Any:
+    """Restituisce le ore contrattuali per ``role`` oppure solleva errore."""
+
+    role_key = str(role).strip()
+    display_role = role_key or str(role)
+    if role_key not in contract_by_role:
+        raise error_cls(
+            f"contract_hours_by_role_h non definito per il ruolo {display_role}"
+        )
+    return contract_by_role[role_key]
+
+
 def load_employees(
     path: str,
     defaults: dict[str, Any],
@@ -115,7 +157,7 @@ def load_employees(
         except ValueError:
             raise LoaderError(f"employees.csv: valore non numerico in '{field_name}': {x!r}")
 
-    contract_by_role = defaults.get("contract_hours_by_role_h", {}) or {}
+    contract_by_role = _contract_hours_by_role(defaults)
 
     dovuto_min = []
     for _, r in df.iterrows():
@@ -124,14 +166,10 @@ def load_employees(
         if raw != "":
             hours = parse_hours_nonneg(raw, "ore_dovute_mese_h")
         else:
-            if role not in contract_by_role:
-                raise LoaderError(
-                    "employees.csv: ore_dovute_mese_h mancante e nessun default in config per ruolo "
-                    f"'{role}' (defaults.contract_hours_by_role_h)"
-                )
-            hours = parse_hours_nonneg(
-                contract_by_role[role], f"contract_hours_by_role_h[{role}]"
+            hours_default = _require_contract_hours(
+                contract_by_role, role, error_cls=LoaderError
             )
+            hours = parse_hours_nonneg(hours_default, f"contract_hours_by_role_h[{role}]")
         dovuto_min.append(to_min_from_hours(hours))
     df["dovuto_min"] = dovuto_min
 
@@ -514,87 +552,21 @@ def build_department_compatibility(
 
 
 def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
-    """Resolve baseline monthly full-time hours for the given role.
+    """Restituisce le ore contrattuali mensili del ruolo dal config defaults."""
 
-    Args:
-        config: Configuration dictionary containing the ``payroll`` section.
-        role: Role identifier used to look up role-specific baselines. Can be ``None``.
+    contract_by_role = _contract_hours_by_role(config.get("defaults"))
 
-    Returns:
-        The baseline full-time monthly hours as a float.
+    if role is None:
+        raise LoaderError("contract_hours_by_role_h non definito per il ruolo None")
 
-    Raises:
-        LoaderError: If the configuration is missing, malformed, o non fornisce
-            un baseline per il ruolo richiesto/default. Sollevata anche quando il
-            valore risolto non è un numero positivo.
-    """
-
-    payroll_cfg = config.get("payroll")
-    if payroll_cfg is None:
-        payroll_cfg = {}
-    elif not isinstance(payroll_cfg, dict):
-        raise LoaderError("config['payroll'] deve essere un dizionario valido")
-
-    raw_by_role = payroll_cfg.get("fulltime_hours_mensili_by_role")
-    if raw_by_role is None:
-        raw_by_role = {}
-    elif not isinstance(raw_by_role, dict):
-        raise LoaderError(
-            "config['payroll']['fulltime_hours_mensili_by_role'] deve essere un dizionario"
-        )
-
-    defaults_cfg = config.get("defaults")
-    contract_by_role_cfg: dict[str, object] = {}
-    if isinstance(defaults_cfg, dict):
-        contract_cfg = defaults_cfg.get("contract_hours_by_role_h")
-        if isinstance(contract_cfg, dict):
-            contract_by_role_cfg = {
-                str(k).strip(): contract_cfg[k]
-                for k in contract_cfg
-                if str(k).strip()
-            }
-
-    role_key = role.strip() if isinstance(role, str) else None
-
-    candidate = None
-    candidate_source = None
-
-    if role_key:
-        lookup_key = role_key
-        if lookup_key in raw_by_role:
-            candidate = raw_by_role[lookup_key]
-            candidate_source = f"payroll.fulltime_hours_mensili_by_role[{lookup_key}]"
-        elif lookup_key in contract_by_role_cfg:
-            candidate = contract_by_role_cfg[lookup_key]
-            candidate_source = f"defaults.contract_hours_by_role_h[{lookup_key}]"
-
-    if candidate is None:
-        payroll_default = payroll_cfg.get("fulltime_hours_mensili_default")
-        if payroll_default is not None:
-            candidate = payroll_default
-            candidate_source = "payroll.fulltime_hours_mensili_default"
-
-    if candidate is None and not role_key and contract_by_role_cfg:
-        first_key = next(iter(contract_by_role_cfg))
-        candidate = contract_by_role_cfg[first_key]
-        candidate_source = f"defaults.contract_hours_by_role_h[{first_key}]"
-
-    if candidate is None:
-        if role_key:
-            raise LoaderError(
-                "Baseline full-time mancante per ruolo "
-                f"'{role_key}': specificare payroll.fulltime_hours_mensili_by_role "
-                "oppure defaults.contract_hours_by_role_h."
-            )
-        raise LoaderError(
-            "config['payroll'] deve specificare 'fulltime_hours_mensili_default' "
-            "oppure defaults.contract_hours_by_role_h."
-        )
+    candidate = _require_contract_hours(contract_by_role, role, error_cls=LoaderError)
 
     try:
         baseline = float(candidate)
     except (TypeError, ValueError) as exc:
-        raise LoaderError(f"Valore non numerico per {candidate_source}: {candidate!r}") from exc
+        raise LoaderError(
+            f"Valore non numerico per contract_hours_by_role_h[{role}]: {candidate!r}"
+        ) from exc
 
     if baseline <= 0:
         raise LoaderError(f"Il baseline full-time deve essere positivo ({baseline})")
@@ -637,11 +609,7 @@ def enrich_employees_with_fte(employees: pd.DataFrame, config: dict) -> pd.DataF
 
     df = employees.copy(deep=True)
 
-    contract_by_role = config.get("contract_hours_by_role_h")
-    if contract_by_role is None:
-        contract_by_role = {}
-    elif not isinstance(contract_by_role, dict):
-        raise ValueError("config['contract_hours_by_role_h'] deve essere un dizionario")
+    contract_by_role = _contract_hours_by_role(config.get("defaults"))
 
     ore_raw = df["ore_dovute_mese_h"]
     ore_numeric = pd.to_numeric(ore_raw, errors="coerce")
@@ -669,13 +637,11 @@ def enrich_employees_with_fte(employees: pd.DataFrame, config: dict) -> pd.DataF
 
         due_hours = ore_numeric.loc[idx]
         if pd.isna(due_hours):
-            if role_str not in contract_by_role:
-                raise ValueError(
-                    "ore_dovute_mese_h mancante per employee_id "
-                    f"{row['employee_id']} e nessun default in config['contract_hours_by_role_h']"
-                )
+            default_hours = _require_contract_hours(
+                contract_by_role, role_str, error_cls=LoaderError
+            )
             try:
-                due_hours = float(contract_by_role[role_str])
+                due_hours = float(default_hours)
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     "Valore non numerico in contract_hours_by_role_h per ruolo "
