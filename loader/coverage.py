@@ -175,8 +175,12 @@ def validate_groups_roles(
             f"{missing_grp}"
         )
 
+    elig_allowed = eligibility_df.loc[
+        eligibility_df["allowed"].fillna(False).astype(bool)
+    ].copy()
+
     er = roles.merge(
-        eligibility_df.rename(columns={"shift_id": "shift_code"}),
+        elig_allowed.rename(columns={"role": "ruolo"}),
         on=["shift_code", "ruolo"],
         how="left",
         indicator=True,
@@ -207,7 +211,7 @@ def validate_groups_roles(
             rows, columns=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
         )
         tr = total_roles_df.merge(
-            eligibility_df.rename(columns={"shift_id": "shift_code"}),
+            elig_allowed.rename(columns={"role": "ruolo"}),
             on=["shift_code", "ruolo"],
             how="left",
             indicator=True,

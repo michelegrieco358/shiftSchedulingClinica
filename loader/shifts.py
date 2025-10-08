@@ -425,51 +425,104 @@ def load_shift_role_eligibility(
 ) -> pd.DataFrame:
     """Carica e valida l'idoneità dei ruoli per ogni turno."""
     df = pd.read_csv(path, dtype=str).fillna("")
-    _ensure_cols(df, {"shift_id", "ruolo"}, "shift_role_eligibility.csv")
 
-    df["shift_id"] = df["shift_id"].astype(str).str.strip().str.upper()
-    df["ruolo"] = df["ruolo"].astype(str).str.strip().str.upper()
+    # Supportiamo sia lo schema legacy (shift_id/ruolo) sia quello esteso
+    # (shift_code/role/allowed).
+    has_shift_code = "shift_code" in df.columns
+    has_shift_id = "shift_id" in df.columns
+    has_role = "role" in df.columns
+    has_ruolo = "ruolo" in df.columns
 
-    if (df["shift_id"] == "").any():
-        bad = df.loc[df["shift_id"] == "", :].index.tolist()[:5]
+    if not (has_shift_code or has_shift_id):
         raise LoaderError(
-            f"shift_role_eligibility.csv: shift_id vuoti nelle righe (prime occorrenze): {bad}"
+            "shift_role_eligibility.csv deve contenere la colonna 'shift_code' o 'shift_id'"
         )
-    if (df["ruolo"] == "").any():
-        bad = df.loc[df["ruolo"] == "", :].index.tolist()[:5]
+    if not (has_role or has_ruolo):
         raise LoaderError(
-            f"shift_role_eligibility.csv: ruolo vuoto nelle righe (prime occorrenze): {bad}"
+            "shift_role_eligibility.csv deve contenere la colonna 'role' o 'ruolo'"
         )
+
+    columns_required = set()
+    if has_shift_code:
+        columns_required.add("shift_code")
+    if has_shift_id:
+        columns_required.add("shift_id")
+    if has_role:
+        columns_required.add("role")
+    if has_ruolo:
+        columns_required.add("ruolo")
+    _ensure_cols(df, columns_required, "shift_role_eligibility.csv")
+
+    if has_shift_id and not has_shift_code:
+        df = df.rename(columns={"shift_id": "shift_code"})
+    if has_ruolo and not has_role:
+        df = df.rename(columns={"ruolo": "role"})
+
+    df["shift_code"] = df["shift_code"].astype(str).str.strip().str.upper()
+    df["role"] = df["role"].astype(str).str.strip().str.upper()
+
+    if (df["shift_code"] == "").any():
+        bad = df.index[df["shift_code"] == ""].tolist()[:5]
+        raise LoaderError(
+            "shift_role_eligibility.csv: shift_code vuoti nelle righe (prime occorrenze): "
+            f"{bad}"
+        )
+    if (df["role"] == "").any():
+        bad = df.index[df["role"] == ""].tolist()[:5]
+        raise LoaderError(
+            "shift_role_eligibility.csv: role vuoti nelle righe (prime occorrenze): "
+            f"{bad}"
+        )
+
+    # Determiniamo e normalizziamo la colonna allowed.
+    def _parse_allowed(value: str) -> bool:
+        s = str(value).strip().lower()
+        if s in {"", "nan"}:
+            return True
+        if s in {"true", "1", "yes", "y", "si", "s"}:
+            return True
+        if s in {"false", "0", "no", "n"}:
+            return False
+        raise LoaderError(
+            f"shift_role_eligibility.csv: valore booleano non riconosciuto in 'allowed': {value!r}"
+        )
+
+    if "allowed" in df.columns:
+        df["allowed"] = df["allowed"].apply(_parse_allowed)
+    else:
+        df["allowed"] = True
 
     # Usa config come fonte di verità per i ruoli ammessi
     allowed_roles = _resolve_allowed_roles(
         defaults, fallback_roles=employees_df["ruolo"].unique()
     )
     known_roles = {str(role).strip().upper() for role in allowed_roles}
-    bad_roles = sorted(set(df["ruolo"].unique()) - known_roles)
+    bad_roles = sorted(set(df["role"].unique()) - known_roles)
     if bad_roles:
         raise LoaderError(
             "shift_role_eligibility.csv: ruoli non ammessi rispetto alla config: "
             f"{bad_roles}"
         )
 
-    known_shifts = {str(shift).strip().upper() for shift in shifts_df["shift_id"].unique()}
-    bad_shifts = sorted(set(df["shift_id"].unique()) - known_shifts)
+    known_shifts = {
+        str(shift).strip().upper() for shift in shifts_df["shift_id"].astype(str).tolist()
+    }
+    bad_shifts = sorted(set(df["shift_code"].unique()) - known_shifts)
     if bad_shifts:
         raise LoaderError(
-            "shift_role_eligibility.csv: shift_id sconosciuti rispetto a shifts.csv: "
+            "shift_role_eligibility.csv: shift_code sconosciuti rispetto a shifts.csv: "
             f"{bad_shifts}"
         )
 
-    df = df.drop_duplicates(subset=["shift_id", "ruolo"]).reset_index(drop=True)
+    df = df.drop_duplicates(subset=["shift_code", "role"], keep="last").reset_index(drop=True)
 
     demand_shifts_in_catalog = sorted(TURNI_DOMANDA & known_shifts)
     for sid in demand_shifts_in_catalog:
-        if df.loc[df["shift_id"] == sid].empty:
+        if df.loc[(df["shift_code"] == sid) & df["allowed"].fillna(False)].empty:
             raise LoaderError(
                 "shift_role_eligibility.csv: nessun ruolo idoneo definito per turno di domanda "
                 f"'{sid}'"
             )
 
-    df = df.sort_values(["shift_id", "ruolo"]).reset_index(drop=True)
-    return df[["shift_id", "ruolo"]]
+    df = df.sort_values(["shift_code", "role"]).reset_index(drop=True)
+    return df[["shift_code", "role", "allowed"]]

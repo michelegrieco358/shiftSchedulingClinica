@@ -195,11 +195,17 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     if not leaves_days_df.empty and "is_leave_day" in leaves_days_df.columns:
         mask = leaves_days_df["is_leave_day"].fillna(False).astype(bool)
         if mask.any():
+            columns = ["employee_id", "data_dt"]
+            if "is_absent" in leaves_days_df.columns:
+                columns.append("is_absent")
+            selected = leaves_days_df.loc[mask, columns].copy()
+            selected["date"] = pd.to_datetime(selected["data_dt"]).dt.date
+            if "is_absent" not in selected.columns:
+                selected["is_absent"] = True
             absences_by_day_df = (
-                leaves_days_df.loc[mask, ["employee_id", "data_dt"]]
-                .assign(date=lambda df: pd.to_datetime(df["data_dt"]).dt.date)
-                .loc[:, ["employee_id", "date"]]
+                selected.loc[:, ["employee_id", "date", "is_absent"]]
                 .drop_duplicates()
+                .assign(is_absent=lambda df: df["is_absent"].astype(bool))
                 .reset_index(drop=True)
             )
 

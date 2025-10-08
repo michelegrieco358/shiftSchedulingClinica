@@ -56,6 +56,8 @@ def load_leaves(
         "data_dt",
         "tipo_set",
         "is_leave_day",
+        "is_absent",
+        "absence_hours_h",
         "dow_iso",
         "week_start_date",
         "week_start_date_dt",
@@ -205,6 +207,8 @@ def load_leaves(
             .agg(
                 data_dt=("data_dt", "first"),
                 tipo_set=("tipo", _join_types),
+                is_absent=("is_absent", "max"),
+                absence_hours_h=("absence_hours_h", "max"),
                 dow_iso=("dow_iso", "first"),
                 week_start_date=("week_start_date", "first"),
                 week_start_date_dt=("week_start_date_dt", "first"),
@@ -217,6 +221,8 @@ def load_leaves(
             )
         )
         day_out["is_leave_day"] = 1
+        day_out["is_absent"] = day_out["is_absent"].fillna(False).astype(bool)
+        day_out["absence_hours_h"] = day_out["absence_hours_h"].fillna(0.0)
         day_out = day_out[
             [
                 "employee_id",
@@ -224,6 +230,8 @@ def load_leaves(
                 "data_dt",
                 "tipo_set",
                 "is_leave_day",
+                "is_absent",
+                "absence_hours_h",
                 "dow_iso",
                 "week_start_date",
                 "week_start_date_dt",
