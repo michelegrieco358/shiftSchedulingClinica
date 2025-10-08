@@ -25,6 +25,7 @@ from loader.employees import (
 )
 from loader.leaves import load_leaves
 from loader.shifts import load_shift_role_eligibility, load_shifts
+from loader.utils import LoaderError
 
 
 def _calendar_info(cfg: dict[str, object]) -> tuple[int, int]:
@@ -69,15 +70,17 @@ def test_load_employees_and_cross_policy_overrides() -> None:
     assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(3.0)
 
 
-def test_resolve_fulltime_baseline_precedence() -> None:
+def test_resolve_fulltime_baseline_reads_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
 
     assert resolve_fulltime_baseline(cfg, "caposala") == pytest.approx(150)
     assert resolve_fulltime_baseline(cfg, "infermiere") == pytest.approx(168)
-    assert resolve_fulltime_baseline(cfg, None) == pytest.approx(165)
+
+    with pytest.raises(LoaderError, match="contract_hours_by_role_h non definito per il ruolo sconosciuto"):
+        resolve_fulltime_baseline(cfg, "sconosciuto")
 
 
-def test_resolve_fulltime_baseline_without_payroll_falls_back_to_defaults() -> None:
+def test_resolve_fulltime_baseline_requires_defined_role() -> None:
     cfg = {
         "defaults": {
             "contract_hours_by_role_h": {
@@ -89,7 +92,9 @@ def test_resolve_fulltime_baseline_without_payroll_falls_back_to_defaults() -> N
 
     assert resolve_fulltime_baseline(cfg, "INFERMIERE") == pytest.approx(160)
     assert resolve_fulltime_baseline(cfg, "CAPOSALA") == pytest.approx(150)
-    assert resolve_fulltime_baseline(cfg, None) == pytest.approx(160)
+
+    with pytest.raises(LoaderError, match="contract_hours_by_role_h non definito per il ruolo OSS"):
+        resolve_fulltime_baseline(cfg, "OSS")
 
 
 def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
@@ -180,7 +185,7 @@ def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
 
     assert not day_out.empty
     assert day_out.loc[0, "absence_hours_h"] == pytest.approx(7.5)
-def test_enrich_employees_with_fte_uses_payroll_defaults() -> None:
+def test_enrich_employees_with_fte_uses_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
     employees_df = load_employees(
