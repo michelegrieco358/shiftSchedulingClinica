@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from .absences import get_absence_hours_from_config
 from .utils import (
     LoaderError,
     _ensure_cols,
@@ -620,37 +621,6 @@ def enrich_employees_with_fte(employees: pd.DataFrame, config: dict) -> pd.DataF
 
 
 def get_absence_hours(config: dict) -> float:
-    """Return configured absence hours, defaulting to six if unspecified.
+    """Compatibilità retroattiva: delega a ``get_absence_hours_from_config``."""
 
-    Args:
-        config: Configuration dictionary containing the ``payroll`` section.
-
-    Returns:
-        Absence hours as a positive float value.
-
-    Raises:
-        ValueError: If the derived absence hours are missing, invalid or not
-            strictly positive.
-    """
-
-    payroll_cfg = config.get("payroll")
-    if payroll_cfg is None:
-        payroll_cfg = {}
-    if not isinstance(payroll_cfg, dict):
-        raise ValueError("config['payroll'] deve essere un dizionario valido")
-
-    raw_value = payroll_cfg.get("absence_hours_h")
-    if raw_value is None:
-        raw_value = 6
-
-    try:
-        absence_hours = float(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "Valore non numerico per payroll.absence_hours_h"
-        ) from exc
-
-    if absence_hours <= 0:
-        raise ValueError("Le ore di assenza devono essere un numero positivo")
-
-    return absence_hours
+    return get_absence_hours_from_config(config)

@@ -11,6 +11,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover - messaggio esplicativo
         "Installarlo con `pip install -r requirements.txt`."
     ) from exc
 
+from .absences import (
+    build_absence_masks,
+    explode_absences_by_day,
+    get_absence_hours_from_config,
+    load_absences,
+)
 from .availability import load_availability
 from .calendar import attach_calendar, build_calendar, enrich_shift_slots_calendar
 from .config import load_config, load_holidays
@@ -196,6 +202,10 @@ __all__ = [
     "LoadedData",
     "load_all",
     "attach_calendar",
+    "build_absence_masks",
     "build_calendar",
+    "explode_absences_by_day",
+    "get_absence_hours_from_config",
     "enrich_shift_slots_calendar",
+    "load_absences",
 ]

@@ -4,8 +4,9 @@ import os
 
 import pandas as pd
 
+from .absences import explode_absences_by_day, load_absences
 from .calendar import attach_calendar
-from .utils import LoaderError, _ensure_cols
+from .utils import LoaderError
 
 
 def load_leaves(
@@ -71,33 +72,19 @@ def load_leaves(
         empty_day = pd.DataFrame(columns=day_columns)
         return empty_shift, empty_day
 
-    df = pd.read_csv(path, dtype=str).fillna("")
+    absences_df = load_absences(path)
 
-    _ensure_cols(df, {"employee_id", "start_date", "end_date", "tipo"}, "leaves.csv")
-
-    df["employee_id"] = df["employee_id"].astype(str).str.strip()
-    df["start_date"] = df["start_date"].astype(str).str.strip()
-    df["end_date"] = df["end_date"].astype(str).str.strip()
-    df["tipo"] = df["tipo"].astype(str).str.strip()
-
-    known_emp = set(employees_df["employee_id"].unique())
-    unknown = sorted(set(df["employee_id"].unique()) - known_emp)
+    known_emp = set(employees_df["employee_id"].astype(str).unique())
+    unknown = sorted(set(absences_df["employee_id"].unique()) - known_emp)
     if unknown:
         raise LoaderError(f"leaves.csv: employee_id sconosciuti: {unknown}")
 
-    try:
-        df["start_date_dt"] = pd.to_datetime(df["start_date"], format="%Y-%m-%d", errors="raise")
-        df["end_date_dt"] = pd.to_datetime(df["end_date"], format="%Y-%m-%d", errors="raise")
-    except ValueError as exc:
-        raise LoaderError(f"leaves.csv: formato data non valido: {exc}")
-
-    bad_interval = df["start_date_dt"] > df["end_date_dt"]
-    if bad_interval.any():
-        bad_rows = df.loc[bad_interval, ["employee_id", "start_date", "end_date"]]
-        raise LoaderError(
-            "leaves.csv: intervallo con start_date > end_date per le righe:\n"
-            f"{bad_rows}"
-        )
+    absences_df["start_date_dt"] = pd.to_datetime(absences_df["date_from"], format="%Y-%m-%d")
+    absences_df["end_date_dt"] = pd.to_datetime(absences_df["date_to"], format="%Y-%m-%d")
+    absences_df["tipo"] = absences_df["type"]
+    abs_by_day = explode_absences_by_day(
+        absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]]
+    )
 
     shift_info = shifts_df.loc[
         shifts_df["shift_id"].isin(allowed_turns),
@@ -106,23 +93,11 @@ def load_leaves(
     shift_rows = list(shift_info.itertuples(index=False))
 
     records = []
-    day_records = []
-    for row in df.itertuples(index=False):
+    for row in absences_df.itertuples(index=False):
         absence_start_day = row.start_date_dt.normalize()
         absence_end_day = row.end_date_dt.normalize()
         absence_interval_start = absence_start_day
         absence_interval_end = absence_end_day + pd.Timedelta(days=1)
-
-        current_day = absence_start_day
-        while current_day <= absence_end_day:
-            day_records.append(
-                {
-                    "employee_id": row.employee_id,
-                    "data": current_day.date().isoformat(),
-                    "tipo": row.tipo,
-                }
-            )
-            current_day += pd.Timedelta(days=1)
 
         day = absence_start_day - pd.Timedelta(days=1)
         last_day = absence_end_day
@@ -213,9 +188,10 @@ def load_leaves(
     else:
         shift_out = pd.DataFrame(columns=shift_columns)
 
-    if day_records:
-        day_out = pd.DataFrame.from_records(day_records)
-        day_out = day_out.drop_duplicates().reset_index(drop=True)
+    if not abs_by_day.empty:
+        day_out = abs_by_day.copy()
+        day_out["data"] = day_out["date"].apply(lambda x: x.isoformat())
+        day_out["tipo"] = day_out["type"]
         day_out["data_dt"] = pd.to_datetime(day_out["data"], format="%Y-%m-%d")
         day_out = attach_calendar(day_out, calendar_df)
         day_out = day_out[day_out["is_in_horizon"].fillna(False)].copy()
