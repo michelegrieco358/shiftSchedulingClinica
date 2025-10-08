@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from .utils import LoaderError, _ensure_cols, _resolve_allowed_departments
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_month_plan(
@@ -52,7 +57,7 @@ def load_month_plan(
 
     return df[["data", "data_dt", "reparto_id", "shift_code", "coverage_code"]]
 
-def load_coverage_groups(path: str) -> pd.DataFrame:
+def load_coverage_groups(path: str, defaults: dict[str, object]) -> pd.DataFrame:
     """Carica la tabella dei gruppi di copertura includendo il reparto di riferimento."""
 
     df = pd.read_csv(path, dtype=str).fillna("").copy()
@@ -62,6 +67,33 @@ def load_coverage_groups(path: str) -> pd.DataFrame:
         "coverage_groups.csv",
     )
 
+    overstaffing_cfg = (defaults.get("overstaffing") if defaults else {}) or {}
+    if not isinstance(overstaffing_cfg, dict):
+        raise LoaderError("defaults.overstaffing deve essere un dizionario")
+
+    overstaff_enabled = bool(overstaffing_cfg.get("enabled", True))
+    group_cap_default = overstaffing_cfg.get("group_cap_default", 0)
+    try:
+        group_cap_default = int(group_cap_default)
+    except (TypeError, ValueError) as exc:
+        raise LoaderError(
+            "defaults.overstaffing.group_cap_default deve essere un intero"
+        ) from exc
+    if group_cap_default < 0:
+        raise LoaderError(
+            "defaults.overstaffing.group_cap_default deve essere ≥ 0"
+        )
+
+    if overstaff_enabled:
+        logger.info(
+            "coverage_groups: overstaffing abilitato (tetto predefinito = %s)",
+            group_cap_default,
+        )
+    else:
+        logger.info(
+            "coverage_groups: overstaffing disabilitato globalmente (tetto = 0)"
+        )
+
     df = df.assign(
         coverage_code=df["coverage_code"].astype(str).str.strip().str.upper(),
         shift_code=df["shift_code"].astype(str).str.strip().str.upper(),
@@ -69,6 +101,10 @@ def load_coverage_groups(path: str) -> pd.DataFrame:
         gruppo=df["gruppo"].astype(str).str.strip().str.upper(),
         ruoli_totale=df["ruoli_totale"].astype(str).str.strip(),
     )
+
+    if "overstaff_cap" not in df.columns:
+        df["overstaff_cap"] = ""
+    df["overstaff_cap"] = df["overstaff_cap"].astype(str).str.strip()
 
     blank_reparto = df["reparto_id"] == ""
     if blank_reparto.any():
@@ -105,6 +141,58 @@ def load_coverage_groups(path: str) -> pd.DataFrame:
             "coverage_groups.csv: duplicati su (coverage_code, shift_code, reparto_id, gruppo): "
             f"{keys.to_dict(orient='records')}"
         )
+
+    def _resolve_cap(row: pd.Series) -> int:
+        total = int(row["total_staff"])
+        raw_value = row["overstaff_cap"]
+
+        if not overstaff_enabled:
+            return 0
+
+        cap_value: int | None = None
+        if raw_value not in (None, ""):
+            try:
+                cap_value = int(raw_value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "coverage_groups.csv: overstaff_cap non numerico (%s) per %s/%s/%s/%s: uso default %s",
+                    raw_value,
+                    row["coverage_code"],
+                    row["shift_code"],
+                    row["reparto_id"],
+                    row["gruppo"],
+                    group_cap_default,
+                )
+                cap_value = None
+
+        if cap_value is None:
+            cap_value = group_cap_default
+
+        if cap_value < 0:
+            logger.warning(
+                "coverage_groups.csv: overstaff_cap negativo (%s) per %s/%s/%s/%s: impostato a 0",
+                cap_value,
+                row["coverage_code"],
+                row["shift_code"],
+                row["reparto_id"],
+                row["gruppo"],
+            )
+            cap_value = 0
+
+        if cap_value > total * 2:
+            logger.warning(
+                "coverage_groups.csv: overstaff_cap %s eccede 2x total_staff (%s) per %s/%s/%s/%s",
+                cap_value,
+                total,
+                row["coverage_code"],
+                row["shift_code"],
+                row["reparto_id"],
+                row["gruppo"],
+            )
+
+        return cap_value
+
+    df["overstaff_cap_effective"] = df.apply(_resolve_cap, axis=1)
 
     return df.copy()
 
