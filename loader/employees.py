@@ -9,7 +9,6 @@ import pandas as pd
 from .absences import get_absence_hours_from_config
 from .utils import (
     LoaderError,
-    _ensure_cols,
     _resolve_allowed_departments,
     _resolve_allowed_roles,
 )
@@ -25,40 +24,58 @@ def load_employees(
     """Carica e valida dati dipendenti con ore, limiti e contatori."""
     df = pd.read_csv(path, dtype=str).fillna("")
 
-    _ensure_cols(
-        df,
-        {
-            "employee_id",
-            "nome",
-            "ruolo",
-            "reparto_id",
-            "ore_dovute_mese_h",
-            "saldo_prog_iniziale_h",
-        },
-        "employees.csv",
-    )
+    base_required = {
+        "employee_id",
+        "nome",
+        "reparto_id",
+        "ore_dovute_mese_h",
+        "saldo_prog_iniziale_h",
+    }
+    missing_base = base_required - set(df.columns)
+    if missing_base:
+        raise LoaderError(
+            "employees.csv: colonne mancanti: " + ", ".join(sorted(missing_base))
+        )
+
+    role_columns = [col for col in ("role", "ruolo") if col in df.columns]
+    if not role_columns:
+        raise LoaderError(
+            "employees.csv: è richiesta la colonna 'role' (o il legacy 'ruolo')"
+        )
+    if len(role_columns) == 2:
+        legacy = df["ruolo"].astype(str).str.strip()
+        modern = df["role"].astype(str).str.strip()
+        mismatch = legacy.ne(modern) & ~(legacy.eq("") & modern.eq(""))
+        if mismatch.any():
+            rows = ", ".join(str(i + 2) for i in mismatch[mismatch].index.tolist())
+            raise LoaderError(
+                "employees.csv: colonne 'role' e 'ruolo' presenti ma con valori diversi alle "
+                f"righe [{rows}]"
+            )
+    role_source = role_columns[0]
+    if role_source != "role":
+        df = df.rename(columns={role_source: "role"})
+    if "ruolo" in df.columns:
+        df = df.drop(columns=["ruolo"])
 
     if df["employee_id"].duplicated().any():
         dups = df[df["employee_id"].duplicated(keep=False)].sort_values("employee_id")
         raise LoaderError(
-            f"employees.csv: employee_id duplicati:\n{dups[['employee_id','nome','ruolo']]}"
+            f"employees.csv: employee_id duplicati:\n{dups[['employee_id','nome','role']]}"
         )
 
-    df["ruolo"] = df["ruolo"].astype(str).str.strip()
-    # Esponiamo anche la colonna standardizzata `role` per compatibilita' con le
-    # pipeline di pre-processing.
-    df["role"] = df["ruolo"]
+    df["role"] = df["role"].astype(str).str.strip()
 
-    allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=df["ruolo"].unique())
+    allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=df["role"].unique())
 
-    bad_roles = sorted(set(df["ruolo"].unique()) - set(allowed_roles))
+    bad_roles = sorted(set(df["role"].unique()) - set(allowed_roles))
     if bad_roles:
         raise LoaderError(f"employees.csv: ruoli non ammessi rispetto alla config: {bad_roles}")
 
     allowed_departments = _resolve_allowed_departments(defaults)
     df["reparto_id"] = df["reparto_id"].astype(str).str.strip()
     if (df["reparto_id"] == "").any():
-        bad = df.loc[df["reparto_id"] == "", ["employee_id", "nome", "ruolo"]]
+        bad = df.loc[df["reparto_id"] == "", ["employee_id", "nome", "role"]]
         raise LoaderError(
             "employees.csv: la colonna 'reparto_id' è obbligatoria e non può essere vuota. "
             f"Righe interessate:\n{bad}"
@@ -103,17 +120,17 @@ def load_employees(
     dovuto_min = []
     for _, r in df.iterrows():
         raw = str(r["ore_dovute_mese_h"]).strip()
-        ruolo = str(r["ruolo"]).strip()
+        role = str(r["role"]).strip()
         if raw != "":
             hours = parse_hours_nonneg(raw, "ore_dovute_mese_h")
         else:
-            if ruolo not in contract_by_role:
+            if role not in contract_by_role:
                 raise LoaderError(
                     "employees.csv: ore_dovute_mese_h mancante e nessun default in config per ruolo "
-                    f"'{ruolo}' (defaults.contract_hours_by_role_h)"
+                    f"'{role}' (defaults.contract_hours_by_role_h)"
                 )
             hours = parse_hours_nonneg(
-                contract_by_role[ruolo], f"contract_hours_by_role_h[{ruolo}]"
+                contract_by_role[role], f"contract_hours_by_role_h[{role}]"
             )
         dovuto_min.append(to_min_from_hours(hours))
     df["dovuto_min"] = dovuto_min
@@ -254,7 +271,7 @@ def load_employees(
     resolved_month: list[int] = []
 
     for idx, row in df.iterrows():
-        role = str(row["ruolo"]).strip()
+        role = str(row["role"]).strip()
         role_cfg = role_defaults.get(role, {}) or {}
 
         role_can = _coerce_bool(
@@ -343,7 +360,6 @@ def load_employees(
     ordered_cols = [
         "employee_id",
         "nome",
-        "ruolo",
         "role",
         "reparto_id",
         "ore_dovute_mese_h",
@@ -379,29 +395,54 @@ def load_role_dept_pools(
 ) -> pd.DataFrame:
     """Carica pool di reparti per ogni ruolo (file opzionale)."""
     if not os.path.exists(path):
-        return pd.DataFrame(columns=["ruolo", "pool_id", "reparto_id"])
+        return pd.DataFrame(columns=["role", "pool_id", "reparto_id"])
 
     df = pd.read_csv(path, dtype=str).fillna("")
-    _ensure_cols(df, {"ruolo", "pool_id", "reparto_id"}, "role_dept_pools.csv")
 
-    for col in ["ruolo", "pool_id", "reparto_id"]:
+    base_required = {"pool_id", "reparto_id"}
+    missing_base = base_required - set(df.columns)
+    if missing_base:
+        raise LoaderError(
+            "role_dept_pools.csv: colonne mancanti: " + ", ".join(sorted(missing_base))
+        )
+
+    role_columns = [col for col in ("role", "ruolo") if col in df.columns]
+    if not role_columns:
+        raise LoaderError(
+            "role_dept_pools.csv: è richiesta la colonna 'role' (o il legacy 'ruolo')"
+        )
+    if len(role_columns) == 2:
+        legacy = df["ruolo"].astype(str).str.strip()
+        modern = df["role"].astype(str).str.strip()
+        mismatch = legacy.ne(modern) & ~(legacy.eq("") & modern.eq(""))
+        if mismatch.any():
+            rows = ", ".join(str(i + 2) for i in mismatch[mismatch].index.tolist())
+            raise LoaderError(
+                "role_dept_pools.csv: colonne 'role' e 'ruolo' con valori diversi alle righe "
+                f"[{rows}]"
+            )
+    role_source = role_columns[0]
+    if role_source != "role":
+        df = df.rename(columns={role_source: "role"})
+    if "ruolo" in df.columns:
+        df = df.drop(columns=["ruolo"])
+
+    for col in ["role", "pool_id", "reparto_id"]:
         df[col] = df[col].astype(str).str.strip()
 
-    if (df[["ruolo", "pool_id", "reparto_id"]] == "").any().any():
-        bad_rows = df.loc[
-            (df[["ruolo", "pool_id", "reparto_id"]] == "").any(axis=1)
-        ]
+    if (df[["role", "pool_id", "reparto_id"]] == "").any().any():
+        bad_rows = df.loc[(df[["role", "pool_id", "reparto_id"]] == "").any(axis=1)]
         raise LoaderError(
-            "role_dept_pools.csv: valori vuoti non ammessi nelle colonne ruolo/pool_id/reparto_id. "
+            "role_dept_pools.csv: valori vuoti non ammessi nelle colonne role/pool_id/reparto_id. "
             f"Righe interessate:\n{bad_rows}"
         )
 
     allowed_roles = set(
-        _resolve_allowed_roles(defaults, fallback_roles=employees_df["ruolo"].unique())
+        _resolve_allowed_roles(defaults, fallback_roles=employees_df["role"].unique())
     )
     allowed_departments = set(_resolve_allowed_departments(defaults))
 
-    bad_roles = sorted(set(df["ruolo"].unique()) - allowed_roles)
+    bad_roles = sorted(set(df["role"].unique()) - allowed_roles)
     if bad_roles:
         raise LoaderError(
             "role_dept_pools.csv: ruoli non ammessi rispetto alla config: "
@@ -415,16 +456,16 @@ def load_role_dept_pools(
             f"{bad_departments}"
         )
 
-    if df.duplicated(subset=["ruolo", "pool_id", "reparto_id"]).any():
+    if df.duplicated(subset=["role", "pool_id", "reparto_id"]).any():
         dup = df[
-            df.duplicated(subset=["ruolo", "pool_id", "reparto_id"], keep=False)
-        ].sort_values(["ruolo", "pool_id", "reparto_id"])
+            df.duplicated(subset=["role", "pool_id", "reparto_id"], keep=False)
+        ].sort_values(["role", "pool_id", "reparto_id"])
         raise LoaderError(
-            "role_dept_pools.csv: duplicati non ammessi su (ruolo, pool_id, reparto_id):\n"
+            "role_dept_pools.csv: duplicati non ammessi su (role, pool_id, reparto_id):\n"
             f"{dup}"
         )
 
-    return df.sort_values(["ruolo", "pool_id", "reparto_id"]).reset_index(drop=True)
+    return df.sort_values(["role", "pool_id", "reparto_id"]).reset_index(drop=True)
 
 
 def build_department_compatibility(
@@ -432,7 +473,7 @@ def build_department_compatibility(
 ) -> pd.DataFrame:
     """Costruisce matrice compatibilità tra reparti basata sui pool."""
     allowed_roles = _resolve_allowed_roles(
-        defaults, fallback_roles=employees_df["ruolo"].unique()
+        defaults, fallback_roles=employees_df["role"].unique()
     )
     allowed_departments = _resolve_allowed_departments(defaults)
 
@@ -451,7 +492,7 @@ def build_department_compatibility(
             add(role, dept, dept)
 
     if not pools_df.empty:
-        pools_by_role = {role: grp for role, grp in pools_df.groupby("ruolo")}
+        pools_by_role = {role: grp for role, grp in pools_df.groupby("role")}
         for role in allowed_roles:
             role_df = pools_by_role.get(role)
             if role_df is None:
@@ -463,11 +504,11 @@ def build_department_compatibility(
                         add(role, dept_home, dept_target)
 
     compat_df = pd.DataFrame(
-        combos, columns=["ruolo", "reparto_home", "reparto_target"]
+        combos, columns=["role", "reparto_home", "reparto_target"]
     )
     if not compat_df.empty:
         compat_df = compat_df.sort_values(
-            ["ruolo", "reparto_home", "reparto_target"]
+            ["role", "reparto_home", "reparto_target"]
         ).reset_index(drop=True)
     return compat_df
 

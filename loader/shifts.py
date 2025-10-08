@@ -494,7 +494,7 @@ def load_shift_role_eligibility(
 
     # Usa config come fonte di verità per i ruoli ammessi
     allowed_roles = _resolve_allowed_roles(
-        defaults, fallback_roles=employees_df["ruolo"].unique()
+        defaults, fallback_roles=employees_df["role"].unique()
     )
     known_roles = {str(role).strip().upper() for role in allowed_roles}
     bad_roles = sorted(set(df["role"].unique()) - known_roles)

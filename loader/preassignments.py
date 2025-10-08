@@ -118,16 +118,16 @@ def validate_preassignments(
     clean["employee_id"] = clean["employee_id"].astype(str).str.strip()
     clean["slot_id"] = clean["slot_id"].astype("int64")
 
-    employees_lookup = employees.loc[:, ["employee_id", "reparto_id", "ruolo"]].copy()
+    employees_lookup = employees.loc[:, ["employee_id", "reparto_id", "role"]].copy()
     employees_lookup["employee_id"] = (
         employees_lookup["employee_id"].astype(str).str.strip()
     )
     employees_lookup["reparto_id"] = (
         employees_lookup["reparto_id"].astype(str).str.strip()
     )
-    employees_lookup["ruolo"] = employees_lookup["ruolo"].astype(str).str.strip()
+    employees_lookup["role"] = employees_lookup["role"].astype(str).str.strip()
     employees_lookup = employees_lookup.rename(
-        columns={"reparto_id": "employee_reparto_id", "ruolo": "employee_ruolo"}
+        columns={"reparto_id": "employee_reparto_id", "role": "employee_role"}
     )
 
     slots_lookup = shift_slots.loc[
@@ -151,7 +151,7 @@ def validate_preassignments(
         validate="many_to_one",
     )
 
-    missing_emp = merged["employee_ruolo"].isna()
+    missing_emp = merged["employee_role"].isna()
     if missing_emp.any():
         bad = merged.loc[missing_emp, ["employee_id", "slot_id"]].drop_duplicates()
         keys = [
@@ -213,13 +213,13 @@ def validate_preassignments(
         elig["role"] = elig["role"].astype(str).str.strip()
         elig = (
             elig.drop_duplicates(subset=["shift_code", "role"])
-            .rename(columns={"role": "employee_ruolo"})
+            .rename(columns={"role": "employee_role"})
             .drop(columns=["allowed"])
         )
 
         merged = merged.merge(
             elig,
-            on=["shift_code", "employee_ruolo"],
+            on=["shift_code", "employee_role"],
             how="left",
             indicator="_elig_merge",
             validate="many_to_many",
@@ -229,19 +229,19 @@ def validate_preassignments(
         if invalid_role.any():
             bad = merged.loc[
                 invalid_role,
-                ["employee_id", "slot_id", "shift_code", "employee_ruolo"],
+                ["employee_id", "slot_id", "shift_code", "employee_role"],
             ].drop_duplicates()
             keys = [
                 {
                     "employee_id": row.employee_id,
                     "slot_id": int(row.slot_id),
                     "shift_code": row.shift_code,
-                    "ruolo": row.employee_ruolo,
+                    "role": row.employee_role,
                 }
                 for row in bad.itertuples(index=False)
             ]
             raise ValueError(
-                "preassignments: ruolo del dipendente non idoneo per il turno dello slot: "
+                "preassignments: role del dipendente non idoneo per il turno dello slot: "
                 f"{keys}"
             )
 
@@ -298,7 +298,7 @@ def validate_preassignments(
         merged = merged.drop(columns=["_elig_merge"])
 
     merged = merged.rename(columns={"slot_reparto_id": "reparto_id"})
-    merged = merged.drop(columns=["employee_reparto_id", "employee_ruolo", "start_dt"])
+    merged = merged.drop(columns=["employee_reparto_id", "employee_role", "start_dt"])
 
     result_columns = list(clean.columns)
     for col in ("date", "reparto_id", "shift_code"):
