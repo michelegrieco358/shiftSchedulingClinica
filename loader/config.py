@@ -55,6 +55,48 @@ def load_config(path: str) -> dict[str, Any]:
 
     defaults["weekly_rest_min_days"] = weekly_rest_min_days
 
+    rest11h_cfg = defaults.get("rest11h")
+    if rest11h_cfg is None:
+        rest11h_cfg = {}
+    if not isinstance(rest11h_cfg, dict):
+        raise LoaderError("config: defaults.rest11h deve essere un dizionario")
+
+    def _coerce_rest11h(value: Any, label: str) -> int:
+        if value in (None, ""):
+            return 0
+        if isinstance(value, bool):
+            raise LoaderError(f"{label} deve essere un intero ≥ 0 (trovato: {value!r})")
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str):
+            s = value.strip()
+            if s == "":
+                return 0
+            try:
+                parsed = int(s)
+            except ValueError as exc:
+                raise LoaderError(
+                    f"{label} deve essere un intero ≥ 0 (trovato: {value!r})"
+                ) from exc
+        else:
+            raise LoaderError(f"{label} deve essere un intero ≥ 0 (trovato: {value!r})")
+        if parsed < 0:
+            raise LoaderError(
+                f"{label} deve essere un intero ≥ 0 (trovato: {value!r})"
+            )
+        return parsed
+
+    defaults["rest11h"] = {
+        "max_monthly_exceptions": _coerce_rest11h(
+            rest11h_cfg.get("max_monthly_exceptions"),
+            "config: defaults.rest11h.max_monthly_exceptions",
+        ),
+        "max_consecutive_exceptions": _coerce_rest11h(
+            rest11h_cfg.get("max_consecutive_exceptions"),
+            "config: defaults.rest11h.max_consecutive_exceptions",
+        ),
+    }
+
     overstaffing_cfg = defaults.get("overstaffing")
     if overstaffing_cfg is None:
         overstaffing_cfg = {}
