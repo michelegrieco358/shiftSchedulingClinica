@@ -121,59 +121,6 @@ def explode_absences_by_day(
     return exploded
 
 
-def build_absence_masks(
-    shift_slots: pd.DataFrame,
-    abs_by_day: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build assignment and night-slot ban masks from absence information."""
-
-    if shift_slots.empty or abs_by_day.empty:
-        empty_assign = pd.DataFrame(columns=["employee_id", "date"])
-        empty_nights = pd.DataFrame(columns=["employee_id", "slot_id"])
-        return empty_assign, empty_nights
-
-    working_abs = abs_by_day.loc[:, ["employee_id", "date"]].copy()
-    working_abs["date"] = pd.to_datetime(working_abs["date"]).dt.date
-
-    def _strip_timezone(series: pd.Series) -> pd.Series:
-        tz = getattr(series.dt, "tz", None)
-        if tz is None:
-            return series
-        return series.dt.tz_convert(None)
-
-    start_dates = shift_slots[["slot_id", "employee_id", "start_dt"]].copy()
-    start_dates["date"] = _strip_timezone(start_dates["start_dt"]).dt.date
-    start_dates = start_dates.drop(columns=["start_dt"])
-
-    df_absent_on_date = (
-        start_dates.merge(
-            working_abs,
-            on=["employee_id", "date"],
-            how="inner",
-            validate="many_to_many",
-        )[["employee_id", "date"]]
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-
-    end_dates = shift_slots[["slot_id", "employee_id", "end_dt", "is_night"]].copy()
-    end_dates["date"] = _strip_timezone(end_dates["end_dt"]).dt.date
-
-    merged_nights = end_dates.merge(
-        working_abs,
-        on=["employee_id", "date"],
-        how="inner",
-        validate="many_to_many",
-    )
-    df_banned_night_slots = (
-        merged_nights.loc[merged_nights["is_night"].astype(bool), ["employee_id", "slot_id"]]
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-
-    return df_absent_on_date, df_banned_night_slots
-
-
 def get_absence_hours_from_config(config: dict) -> float:
     """Return the configured absence hours with validation."""
 

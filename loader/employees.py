@@ -1038,9 +1038,3 @@ def enrich_employees_with_fte(employees: pd.DataFrame, config: dict) -> pd.DataF
     df["fte_weight"] = fte_series
 
     return df
-
-
-def get_absence_hours(config: dict) -> float:
-    """Compatibilità retroattiva: delega a ``get_absence_hours_from_config``."""
-
-    return get_absence_hours_from_config(config)
