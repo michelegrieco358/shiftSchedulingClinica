@@ -25,6 +25,8 @@ python -m loader --config config.yaml --data-dir . --export-csv
 ```
 
 I file verranno salvati nella cartella `_expanded` all'interno della directory dati.
+Per scegliere una destinazione alternativa è possibile indicare `--export-dir` (percorso
+assoluto o relativo alla directory dati).
 
 ## Limiti orari caricati per dipendente
 
