@@ -535,7 +535,7 @@ def _check_coverage_groups(path: Path) -> tuple[list[dict[str, str]], DatasetSum
 
     dept_col = "reparto_id"
 
-    required = {code_col, shift_col, dept_col, "gruppo", "total_min", "ruoli_totale"}
+    required = {code_col, shift_col, dept_col, "gruppo", "total_staff", "ruoli_totale"}
     _require_columns(columns, required, path.name)
 
     seen = set()
@@ -573,10 +573,10 @@ def _check_coverage_groups(path: Path) -> tuple[list[dict[str, str]], DatasetSum
                 f"{path.name}: duplicato per (codice, turno, reparto_id, gruppo) {key}"
             )
         seen.add(key)
-        total_min = _parse_int(row["total_min"], f"{path.name}: total_min")
-        if total_min <= 0:
+        total_staff = _parse_int(row["total_staff"], f"{path.name}: total_staff")
+        if total_staff <= 0:
             raise ValidationError(
-                f"{path.name}: total_min deve essere positivo per {key}"
+                f"{path.name}: total_staff deve essere positivo per {key}"
             )
         roles = [
             part.strip().upper() for part in row["ruoli_totale"].split("|") if part.strip()
@@ -686,9 +686,9 @@ def _validate_groups_vs_roles(
                     )
                 )
         sum_min = sum(int(float(row["min_ruolo"])) for row in role_rows)
-        if sum_min > int(float(grp["total_min"])):
+        if sum_min > int(float(grp["total_staff"])):
             raise ValidationError(
-                "Incoerenza: somma min_ruolo supera total_min per "
+                "Incoerenza: somma min_ruolo supera total_staff per "
                 "(codice={0}, turno={1}, reparto_id={2}, gruppo={3})".format(*key)
             )
 

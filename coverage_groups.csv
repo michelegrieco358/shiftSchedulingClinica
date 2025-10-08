@@ -1,10 +1,9 @@
-coverage_code,shift_code,reparto_id,gruppo,total_min,ruoli_totale
-S,M,degenza,000-Tetto,8,infermiere|oss
-S,M,degenza,001-Caposala,2,caposala
-S,M,ortopedia,000-Tetto,8,infermiere|oss
-S,M,ortopedia,001-Caposala,2,caposala
+coverage_code,shift_code,reparto_id,gruppo,total_staff,ruoli_totale
+S,M,degenza,000-Tetto,7,infermiere|oss
+S,M,degenza,001-Caposala,1,caposala
+S,M,ortopedia,000-Tetto,7,infermiere|oss
+S,M,ortopedia,001-Caposala,1,caposala
 S,N,degenza,000-Tetto,2,infermiere|oss
-S,N,ortopedia,000-Tetto,2,infermiere|oss
 S,P,degenza,000-Tetto,5,infermiere|oss
 S,P,ortopedia,000-Tetto,5,infermiere|oss
 T,N,degenza,000-Tetto,3,infermiere|oss

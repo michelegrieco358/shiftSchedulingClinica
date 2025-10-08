@@ -58,7 +58,7 @@ def load_coverage_groups(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, dtype=str).fillna("").copy()
     _ensure_cols(
         df,
-        {"coverage_code", "shift_code", "reparto_id", "gruppo", "total_min", "ruoli_totale"},
+        {"coverage_code", "shift_code", "reparto_id", "gruppo", "total_staff", "ruoli_totale"},
         "coverage_groups.csv",
     )
 
@@ -78,7 +78,7 @@ def load_coverage_groups(path: str) -> pd.DataFrame:
             f"[{rows}]"
         )
 
-    df["total_min"] = pd.to_numeric(df["total_min"], errors="raise").astype(int)
+    df["total_staff"] = pd.to_numeric(df["total_staff"], errors="raise").astype(int)
 
     def _split_roles(s: str) -> list[str]:
         return [x.strip().upper() for x in str(s).split("|") if x.strip()]
@@ -244,11 +244,11 @@ def validate_groups_roles(
     chk = groups.merge(
         sums, on=["coverage_code", "shift_code", "reparto_id", "gruppo"], how="left"
     ).fillna({"sum_min_ruolo": 0})
-    viol = chk[chk["total_min"] < chk["sum_min_ruolo"]]
+    viol = chk[chk["total_staff"] < chk["sum_min_ruolo"]]
     if not viol.empty:
         raise LoaderError(
-            "Incoerenza: total_min < somma(min_ruolo) per:\n"
-            f"{viol[['coverage_code','shift_code','reparto_id','gruppo','total_min','sum_min_ruolo']]}"
+            "Incoerenza: total_staff < somma(min_ruolo) per:\n"
+            f"{viol[['coverage_code','shift_code','reparto_id','gruppo','total_staff','sum_min_ruolo']]}"
         )
 
 
@@ -292,7 +292,7 @@ def expand_requirements(
         "shift_code",
         "coverage_code",
         "gruppo",
-        "total_min",
+        "total_staff",
         "ruoli_totale_set",
     ]
     gt = gt[ordered_cols].sort_values(
