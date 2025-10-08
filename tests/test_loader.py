@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 import sys
 
 import pytest
+import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 
@@ -12,6 +13,7 @@ if str(DATA_DIR) not in sys.path:
     sys.path.insert(0, str(DATA_DIR))
 
 from loader import load_all
+from loader.availability import load_availability
 from loader.absences import get_absence_hours_from_config
 from loader.calendar import build_calendar
 from loader.config import load_config
@@ -21,6 +23,7 @@ from loader.employees import (
     load_employees,
     resolve_fulltime_baseline,
 )
+from loader.leaves import load_leaves
 from loader.shifts import load_shift_role_eligibility, load_shifts
 
 
@@ -74,6 +77,78 @@ def test_resolve_fulltime_baseline_precedence() -> None:
     assert resolve_fulltime_baseline(cfg, None) == pytest.approx(165)
 
 
+def test_resolve_fulltime_baseline_without_payroll_falls_back_to_defaults() -> None:
+    cfg = {
+        "defaults": {
+            "contract_hours_by_role_h": {
+                "INFERMIERE": 160,
+                "CAPOSALA": 150,
+            }
+        }
+    }
+
+    assert resolve_fulltime_baseline(cfg, "INFERMIERE") == pytest.approx(160)
+    assert resolve_fulltime_baseline(cfg, "CAPOSALA") == pytest.approx(150)
+    assert resolve_fulltime_baseline(cfg, None) == pytest.approx(160)
+
+
+def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
+    calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
+    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    shifts_df = pd.DataFrame(
+        {
+            "shift_id": ["N"],
+            "duration_min": [600],
+            "crosses_midnight": [1],
+            "start_time": [pd.to_timedelta(22, unit="h")],
+            "end_time": [pd.to_timedelta(6, unit="h")],
+        }
+    )
+
+    availability_path = tmp_path / "availability.csv"
+    availability_path.write_text(
+        "data,employee_id,turno\n"
+        "2024-03-31,E1,N\n"
+        "2024-03-20,E1,N\n"
+    )
+
+    out = load_availability(str(availability_path), employees_df, calendar_df, shifts_df)
+
+    mask_cross = out["data"].eq("2024-03-31")
+    assert mask_cross.any(), "La riga a cavallo dell'orizzonte deve essere mantenuta"
+    row = out.loc[mask_cross].iloc[0]
+    assert not bool(row["is_in_horizon"])
+    assert row["shift_end_dt"] == pd.Timestamp("2024-04-01 06:00:00")
+
+    assert "2024-03-20" not in out["data"].tolist()
+
+
+def test_load_leaves_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
+    calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
+    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    shifts_df = pd.DataFrame(
+        {
+            "shift_id": ["N"],
+            "duration_min": [600],
+            "crosses_midnight": [1],
+            "start_time": [pd.to_timedelta(22, unit="h")],
+            "end_time": [pd.to_timedelta(6, unit="h")],
+        }
+    )
+
+    leaves_path = tmp_path / "leaves.csv"
+    leaves_path.write_text(
+        "employee_id,date_from,date_to,type\n"
+        "E1,2024-04-01,2024-04-01,FERIE\n"
+    )
+
+    shift_out, _ = load_leaves(str(leaves_path), employees_df, shifts_df, calendar_df)
+
+    mask_cross = shift_out["data"].eq("2024-03-31")
+    assert mask_cross.any(), "La riga precedente l'orizzonte deve essere presente"
+    row = shift_out.loc[mask_cross].iloc[0]
+    assert not bool(row["is_in_horizon"])
+    assert row["shift_end_dt"] == pd.Timestamp("2024-04-01 06:00:00")
 def test_enrich_employees_with_fte_uses_payroll_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)

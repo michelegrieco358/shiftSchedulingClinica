@@ -6,7 +6,7 @@ import pandas as pd
 
 from .absences import explode_absences_by_day, load_absences
 from .calendar import attach_calendar
-from .utils import LoaderError
+from .utils import LoaderError, _compute_horizon_window
 
 
 def load_leaves(
@@ -135,7 +135,6 @@ def load_leaves(
         ).reset_index(drop=True)
 
         shift_out = attach_calendar(shift_out, calendar_df)
-        shift_out = shift_out[shift_out["is_in_horizon"].fillna(False)].copy()
 
         shift_cols = [
             "shift_id",
@@ -162,6 +161,15 @@ def load_leaves(
         shift_out.loc[crosses_mask, "shift_end_dt"] = (
             shift_out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
         )
+
+        horizon_start, horizon_end = _compute_horizon_window(calendar_df)
+        overlaps = shift_out["shift_start_dt"].notna() & shift_out["shift_end_dt"].notna()
+        overlaps &= shift_out["shift_end_dt"] > horizon_start
+        overlaps &= shift_out["shift_start_dt"] < horizon_end
+
+        in_horizon = shift_out["is_in_horizon"].astype("boolean", copy=False).fillna(False)
+        keep_mask = in_horizon.astype(bool) | overlaps
+        shift_out = shift_out.loc[keep_mask].copy()
 
         shift_out = shift_out[
             [
