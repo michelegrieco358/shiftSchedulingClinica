@@ -97,6 +97,64 @@ def load_config(path: str) -> dict[str, Any]:
         ),
     }
 
+    absences_cfg = defaults.get("absences")
+    if absences_cfg is None:
+        absences_cfg = {}
+    if not isinstance(absences_cfg, dict):
+        raise LoaderError("config: defaults.absences deve essere un dizionario")
+
+    count_as_worked = absences_cfg.get("count_as_worked_hours", True)
+    if count_as_worked is None:
+        count_as_worked = True
+    if not isinstance(count_as_worked, bool):
+        raise LoaderError(
+            "config: defaults.absences.count_as_worked_hours deve essere booleano (true/false)"
+        )
+
+    role_hours_cfg = absences_cfg.get("full_day_hours_by_role_h") or {}
+    if not isinstance(role_hours_cfg, dict):
+        raise LoaderError(
+            "config: defaults.absences.full_day_hours_by_role_h deve essere un dizionario"
+        )
+
+    role_hours: dict[str, float] = {}
+    for raw_role, raw_value in role_hours_cfg.items():
+        role_key = str(raw_role).strip()
+        if not role_key:
+            continue
+        try:
+            parsed_value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise LoaderError(
+                "config: defaults.absences.full_day_hours_by_role_h deve contenere valori numerici ≥ 0"
+            ) from exc
+        if parsed_value != parsed_value or parsed_value < 0:
+            raise LoaderError(
+                "config: defaults.absences.full_day_hours_by_role_h deve contenere valori numerici ≥ 0"
+            )
+        role_hours[role_key] = parsed_value
+
+    fallback_raw = absences_cfg.get("fallback_contract_daily_avg_h", 0.0)
+    if fallback_raw in (None, ""):
+        fallback_value = 0.0
+    else:
+        try:
+            fallback_value = float(fallback_raw)
+        except (TypeError, ValueError) as exc:
+            raise LoaderError(
+                "config: defaults.absences.fallback_contract_daily_avg_h deve essere un numero ≥ 0"
+            ) from exc
+    if fallback_value != fallback_value or fallback_value < 0:
+        raise LoaderError(
+            "config: defaults.absences.fallback_contract_daily_avg_h deve essere un numero ≥ 0"
+        )
+
+    defaults["absences"] = {
+        "count_as_worked_hours": bool(count_as_worked),
+        "full_day_hours_by_role_h": role_hours,
+        "fallback_contract_daily_avg_h": float(fallback_value),
+    }
+
     overstaffing_cfg = defaults.get("overstaffing")
     if overstaffing_cfg is None:
         overstaffing_cfg = {}

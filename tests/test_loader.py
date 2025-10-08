@@ -73,6 +73,41 @@ def _write_employees_csv(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
     return employees_path
 
 
+def _load_basic_employees(
+    tmp_path: Path,
+    defaults_extra: dict[str, object] | None = None,
+    employees_rows: list[dict[str, object]] | None = None,
+    *,
+    caplog: pytest.LogCaptureFixture | None = None,
+) -> pd.DataFrame:
+    cfg_path = _write_basic_config(tmp_path, defaults_extra)
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    rows = employees_rows or [
+        {
+            "employee_id": "E1",
+            "nome": "Anna",
+            "role": "infermiere",
+            "reparto_id": "dep",
+            "ore_dovute_mese_h": 160,
+            "saldo_prog_iniziale_h": 0,
+        }
+    ]
+    employees_path = _write_employees_csv(tmp_path, rows)
+
+    if caplog is not None:
+        caplog.set_level(logging.INFO)
+
+    return load_employees(
+        str(employees_path),
+        cfg.get("defaults", {}),
+        cfg.get("roles", {}) or {},
+        weeks_in_horizon,
+        horizon_days,
+    )
+
+
 def test_load_employees_and_cross_policy_overrides() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
@@ -197,6 +232,109 @@ def test_load_employees_rest11h_defaults_and_overrides(tmp_path: Path) -> None:
     assert lookup.loc["E3", "rest11h_max_monthly_exceptions"] == 2
     assert lookup.loc["E3", "rest11h_max_consecutive_exceptions"] == 1
 
+
+def test_absence_full_day_hours_global_fallback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    employees_df = _load_basic_employees(
+        tmp_path,
+        {"absences": {"fallback_contract_daily_avg_h": 7.5}},
+        caplog=caplog,
+    )
+
+    row = employees_df.iloc[0]
+    assert pd.isna(row["absence_full_day_hours_h"])
+    assert row["absence_full_day_hours_effective_h"] == pytest.approx(7.5)
+
+    warning_messages = [
+        record.message
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "absence_full_day_hours_h" in record.message
+    ]
+    assert warning_messages, "Expected fallback warning when role mapping is missing"
+
+
+def test_absence_full_day_hours_role_mapping(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    employees_df = _load_basic_employees(
+        tmp_path,
+        {
+            "absences": {
+                "full_day_hours_by_role_h": {"INFERMIERE": 7.25},
+                "fallback_contract_daily_avg_h": 7.5,
+            }
+        },
+        caplog=caplog,
+    )
+
+    row = employees_df.iloc[0]
+    assert row["absence_full_day_hours_effective_h"] == pytest.approx(7.25)
+
+    assert not any(
+        record.levelno == logging.WARNING
+        and "absence_full_day_hours_h non definito" in record.message
+        for record in caplog.records
+    )
+
+
+def test_absence_full_day_hours_employee_override(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    employees_df = _load_basic_employees(
+        tmp_path,
+        {
+            "absences": {
+                "full_day_hours_by_role_h": {"infermiere": 7.5},
+                "fallback_contract_daily_avg_h": 8.0,
+            }
+        },
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "absence_full_day_hours_h": 6.0,
+            }
+        ],
+        caplog=caplog,
+    )
+
+    row = employees_df.iloc[0]
+    assert row["absence_full_day_hours_h"] == pytest.approx(6.0)
+    assert row["absence_full_day_hours_effective_h"] == pytest.approx(6.0)
+
+    assert any(
+        record.levelno == logging.INFO
+        and "absence_full_day_hours_h override" in record.message
+        for record in caplog.records
+    )
+
+
+def test_absence_full_day_hours_invalid_value(tmp_path: Path) -> None:
+    with pytest.raises(
+        LoaderError,
+        match=r"Valore non valido per absence_full_day_hours_h per dipendente",
+    ):
+        _load_basic_employees(
+            tmp_path,
+            {
+                "absences": {
+                    "full_day_hours_by_role_h": {"infermiere": 7.5},
+                    "fallback_contract_daily_avg_h": 7.5,
+                }
+            },
+            [
+                {
+                    "employee_id": "E1",
+                    "nome": "Anna",
+                    "role": "infermiere",
+                    "reparto_id": "dep",
+                    "ore_dovute_mese_h": 160,
+                    "saldo_prog_iniziale_h": 0,
+                    "absence_full_day_hours_h": "abc",
+                }
+            ],
+        )
 
 def test_load_employees_rest11h_invalid_value(tmp_path: Path) -> None:
     cfg_path = _write_basic_config(tmp_path, {"rest11h": {"max_monthly_exceptions": 2}})

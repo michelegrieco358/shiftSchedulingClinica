@@ -14,6 +14,13 @@ defaults:
     infermiere: 168
     oss: 168
     caposala: 150
+  absences:
+    count_as_worked_hours: true
+    full_day_hours_by_role_h:
+      INFERMIERE: 7.5
+      OSS: 7.5
+      CAPOSALA: 7.0
+    fallback_contract_daily_avg_h: 7.5
   rest11h:
     max_monthly_exceptions: 0
     max_consecutive_exceptions: 0

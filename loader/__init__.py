@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 try:  # pragma: no cover - dipendenza runtime
     import pandas as pd
@@ -79,6 +80,7 @@ class LoadedData:
     preassignments_df: pd.DataFrame
     preassign_must_df: pd.DataFrame
     preassign_forbid_df: pd.DataFrame
+    flags: dict[str, Any]
 
 
 def load_all(config_path: str, data_dir: str) -> LoadedData:
@@ -88,6 +90,12 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
 
     defaults = cfg.get("defaults", {})
     absence_hours_h = get_absence_hours_from_config(cfg)
+    absences_cfg = defaults.get("absences", {}) or {}
+    absences_flags = {
+        "absences_count_as_worked_hours": bool(
+            absences_cfg.get("count_as_worked_hours", True)
+        )
+    }
 
     holidays_df = load_holidays(os.path.join(data_dir, "holidays.csv"))
 
@@ -252,6 +260,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         preassignments_df=preassignments_df,
         preassign_must_df=preassign_must_df,
         preassign_forbid_df=preassign_forbid_df,
+        flags=absences_flags,
     )
 
 
