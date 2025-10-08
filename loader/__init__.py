@@ -135,7 +135,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     month_plan_df = load_month_plan(
         os.path.join(data_dir, "month_plan.csv"), shifts_df, defaults
     )
-    groups_df = load_coverage_groups(os.path.join(data_dir, "coverage_groups.csv"))
+    groups_df = load_coverage_groups(
+        os.path.join(data_dir, "coverage_groups.csv"), defaults
+    )
     roles_df = load_coverage_roles(os.path.join(data_dir, "coverage_roles.csv"))
     validate_groups_roles(groups_df, roles_df, eligibility_df)
 

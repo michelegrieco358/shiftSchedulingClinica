@@ -55,6 +55,39 @@ def load_config(path: str) -> dict[str, Any]:
 
     defaults["weekly_rest_min_days"] = weekly_rest_min_days
 
+    overstaffing_cfg = defaults.get("overstaffing")
+    if overstaffing_cfg is None:
+        overstaffing_cfg = {}
+    if not isinstance(overstaffing_cfg, dict):
+        raise LoaderError("config: defaults.overstaffing deve essere un dizionario")
+
+    overstaff_enabled = overstaffing_cfg.get("enabled", True)
+    if overstaff_enabled is None:
+        overstaff_enabled = True
+    if not isinstance(overstaff_enabled, bool):
+        raise LoaderError(
+            "config: defaults.overstaffing.enabled deve essere booleano (true/false)"
+        )
+
+    cap_default_raw = overstaffing_cfg.get("group_cap_default", 0)
+    if cap_default_raw in (None, ""):
+        cap_default_raw = 0
+    try:
+        cap_default = int(cap_default_raw)
+    except (TypeError, ValueError) as exc:
+        raise LoaderError(
+            "config: defaults.overstaffing.group_cap_default deve essere un intero"
+        ) from exc
+    if cap_default < 0:
+        raise LoaderError(
+            "config: defaults.overstaffing.group_cap_default deve essere ≥ 0"
+        )
+
+    defaults["overstaffing"] = {
+        "enabled": overstaff_enabled,
+        "group_cap_default": cap_default,
+    }
+
     return cfg
 
 
