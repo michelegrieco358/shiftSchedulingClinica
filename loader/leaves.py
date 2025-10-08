@@ -14,6 +14,8 @@ def load_leaves(
     employees_df: pd.DataFrame,
     shifts_df: pd.DataFrame,
     calendar_df: pd.DataFrame,
+    *,
+    absence_hours_h: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     allowed_turns = tuple(
         pd.Series(shifts_df.loc[shifts_df["duration_min"] > 0, "shift_id"])
@@ -76,6 +78,11 @@ def load_leaves(
 
     absences_df = load_absences(path)
 
+    if absence_hours_h is None:
+        absence_hours_h = 6.0
+    else:
+        absence_hours_h = float(absence_hours_h)
+
     known_emp = set(employees_df["employee_id"].astype(str).unique())
     unknown = sorted(set(absences_df["employee_id"].unique()) - known_emp)
     if unknown:
@@ -85,7 +92,8 @@ def load_leaves(
     absences_df["end_date_dt"] = pd.to_datetime(absences_df["date_to"], format="%Y-%m-%d")
     absences_df["tipo"] = absences_df["type"]
     abs_by_day = explode_absences_by_day(
-        absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]]
+        absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]],
+        absence_hours_h=absence_hours_h,
     )
 
     shift_info = shifts_df.loc[

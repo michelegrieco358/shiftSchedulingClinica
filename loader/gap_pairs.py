@@ -34,7 +34,7 @@ def _normalise(series: pd.Series) -> pd.Series:
 def _to_naive_utc(series: pd.Series) -> pd.Series:
     """Converte una serie datetime tz-aware in naive su UTC."""
 
-    if not pd.api.types.is_datetime64tz_dtype(series):
+    if not isinstance(series.dtype, pd.DatetimeTZDtype):
         raise TypeError("Le colonne start_dt e end_dt devono essere datetime tz-aware")
     return series.dt.tz_convert("UTC").dt.tz_localize(None)
 
@@ -42,7 +42,7 @@ def _to_naive_utc(series: pd.Series) -> pd.Series:
 def _iso_year_week_of(ts: pd.Series) -> tuple[pd.Series, pd.Series]:
     """Restituisce (iso_year, iso_week) da una Series datetime tz-aware."""
 
-    if not pd.api.types.is_datetime64tz_dtype(ts):
+    if not isinstance(ts.dtype, pd.DatetimeTZDtype):
         raise TypeError("La serie deve contenere datetime tz-aware")
 
     iso = ts.dt.isocalendar()
