@@ -23,27 +23,35 @@ def load_config(path: str) -> dict[str, Any]:
 
 
 def load_holidays(path: str) -> pd.DataFrame:
+    """Carica le festività normalizzando le date e rimuovendo duplicati."""
+
     if not os.path.exists(path):
-        return pd.DataFrame(columns=["data", "data_dt", "descrizione"])
+        return pd.DataFrame(columns=["date", "name"])
 
     df = pd.read_csv(path, dtype=str).fillna("")
-    _ensure_cols(df, {"data", "descrizione"}, "holidays.csv")
 
-    df["data"] = df["data"].astype(str).str.strip()
-    df["descrizione"] = df["descrizione"].astype(str).str.strip()
+    rename_map = {}
+    if "data" in df.columns and "date" not in df.columns:
+        rename_map["data"] = "date"
+    if "descrizione" in df.columns and "name" not in df.columns:
+        rename_map["descrizione"] = "name"
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
-    if (df["data"] == "").any():
-        raise LoaderError("holidays.csv: la colonna 'data' non può contenere valori vuoti")
+    _ensure_cols(df, {"date", "name"}, "holidays.csv")
 
-    try:
-        df["data_dt"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="raise")
-    except ValueError as exc:
-        raise LoaderError(f"holidays.csv: formato data non valido: {exc}")
+    df["date"] = df["date"].astype(str).str.strip()
+    df["name"] = df["name"].astype(str).str.strip()
 
-    dup_dates = df[df["data"].duplicated(keep=False)]["data"].unique()
-    if len(dup_dates) > 0:
-        raise LoaderError(
-            "holidays.csv: date duplicate non ammesse: " + ", ".join(sorted(dup_dates))
-        )
+    parsed_dates = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
 
-    return df[["data", "data_dt", "descrizione"]].sort_values("data").reset_index(drop=True)
+    if parsed_dates.dt.tz is not None:
+        parsed_dates = parsed_dates.dt.tz_convert(None)
+    parsed_dates = parsed_dates.dt.normalize()
+
+    df["date"] = parsed_dates
+    df = df.dropna(subset=["date"])
+
+    df = df[~df["date"].duplicated(keep="first")]
+
+    return df[["date", "name"]].sort_values("date").reset_index(drop=True)
