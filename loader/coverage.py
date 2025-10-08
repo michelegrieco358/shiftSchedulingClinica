@@ -192,7 +192,7 @@ def load_coverage_groups(path: str, defaults: dict[str, object]) -> pd.DataFrame
 
         return cap_value
 
-    df["overstaff_cap_effective"] = df.apply(_resolve_cap, axis=1)
+    df["overstaff_cap_effective"] = df.apply(_resolve_cap, axis=1).astype(int)
 
     return df.copy()
 
@@ -410,6 +410,8 @@ def expand_requirements(
         "coverage_code",
         "gruppo",
         "total_staff",
+        "overstaff_cap",
+        "overstaff_cap_effective",
         "ruoli_totale_set",
     ]
     gt = gt[ordered_cols].sort_values(

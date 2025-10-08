@@ -20,6 +20,7 @@ from loader.availability import load_availability
 from loader.absences import get_absence_hours_from_config
 from loader.calendar import build_calendar
 from loader.config import load_config
+from loader.coverage import expand_requirements, load_coverage_groups
 from loader.cross import enrich_employees_with_cross_policy
 from loader.employees import (
     enrich_employees_with_fte,
@@ -71,6 +72,13 @@ def _write_employees_csv(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
     employees_path = tmp_path / "employees.csv"
     df.to_csv(employees_path, index=False)
     return employees_path
+
+
+def _write_coverage_groups_csv(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
+    df = pd.DataFrame(rows)
+    path = tmp_path / "coverage_groups.csv"
+    df.to_csv(path, index=False)
+    return path
 
 
 def _load_basic_employees(
@@ -705,6 +713,16 @@ def test_load_employees_weekly_rest_invalid_values(invalid_value: str, tmp_path:
         )
 
 
+def test_get_absence_hours_from_config_warns_on_payroll(caplog: pytest.LogCaptureFixture) -> None:
+    cfg = {"payroll": {"absence_hours_h": 7}}
+
+    with caplog.at_level(logging.WARNING, logger="loader.absences"):
+        value = get_absence_hours_from_config(cfg)
+
+    assert value == pytest.approx(7.0)
+    assert any("deprecato" in message for message in caplog.messages)
+
+
 def test_load_config_warns_on_weekly_rest_hours(tmp_path: Path) -> None:
     cfg_path = _write_basic_config(tmp_path, defaults_extra={"weekly_rest_min_h": 48})
 
@@ -739,6 +757,90 @@ def test_shift_role_eligibility_with_allowed_column() -> None:
     )
     assert mask.any()
     assert not bool(eligibility_df.loc[mask, "allowed"].iloc[0])
+
+
+def test_load_coverage_groups_applies_default_overstaff_cap(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        defaults_extra={"overstaffing": {"enabled": True, "group_cap_default": 3}},
+    )
+    cfg = load_config(str(cfg_path))
+
+    coverage_groups_path = _write_coverage_groups_csv(
+        tmp_path,
+        [
+            {
+                "coverage_code": "COV",
+                "shift_code": "S1",
+                "reparto_id": "DEP",
+                "gruppo": "G1",
+                "total_staff": 5,
+                "ruoli_totale": "INFERMIERE",
+                "overstaff_cap": "",
+            }
+        ],
+    )
+
+    caplog.set_level(logging.INFO, logger="loader.coverage")
+    df = load_coverage_groups(str(coverage_groups_path), cfg.get("defaults", {}))
+
+    assert df.loc[0, "overstaff_cap_effective"] == 3
+    assert "overstaffing abilitato" in " ".join(caplog.messages)
+
+
+def test_expand_requirements_propagates_overstaff_cap(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        defaults_extra={"overstaffing": {"enabled": True, "group_cap_default": 4}},
+    )
+    cfg = load_config(str(cfg_path))
+
+    coverage_groups_path = _write_coverage_groups_csv(
+        tmp_path,
+        [
+            {
+                "coverage_code": "COV",
+                "shift_code": "S1",
+                "reparto_id": "DEP",
+                "gruppo": "G1",
+                "total_staff": 6,
+                "ruoli_totale": "INFERMIERE",
+                "overstaff_cap": "",
+            }
+        ],
+    )
+    groups_df = load_coverage_groups(str(coverage_groups_path), cfg.get("defaults", {}))
+
+    month_plan = pd.DataFrame(
+        [
+            {
+                "data": "2025-01-01",
+                "reparto_id": "DEP",
+                "shift_code": "S1",
+                "coverage_code": "COV",
+            }
+        ]
+    )
+    roles_df = pd.DataFrame(
+        [
+            {
+                "coverage_code": "COV",
+                "shift_code": "S1",
+                "reparto_id": "DEP",
+                "gruppo": "G1",
+                "role": "INFERMIERE",
+                "min_ruolo": 2,
+            }
+        ]
+    )
+
+    groups_total, roles_total = expand_requirements(month_plan, groups_df, roles_df)
+
+    assert "overstaff_cap_effective" in groups_total.columns
+    assert groups_total.loc[0, "overstaff_cap_effective"] == 4
+    assert roles_total.loc[0, "gruppo"] == "G1"
 
 
 def test_get_absence_hours_from_config_and_load_all_smoke() -> None:

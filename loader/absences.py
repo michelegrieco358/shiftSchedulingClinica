@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
+
+
+logger = logging.getLogger(__name__)
 
 
 _ABSENCE_REQUIRED_COLUMNS = {
@@ -129,6 +134,12 @@ def get_absence_hours_from_config(config: dict) -> float:
         payroll_cfg = {}
     if not isinstance(payroll_cfg, dict):
         raise ValueError("config['payroll'] deve essere un dizionario valido")
+
+    if "absence_hours_h" in payroll_cfg:
+        logger.warning(
+            "config: payroll.absence_hours_h è deprecato e verrà rimosso in futuro; "
+            "migrare alla nuova configurazione delle assenze"
+        )
 
     raw_value = payroll_cfg.get("absence_hours_h", 6.0)
 
