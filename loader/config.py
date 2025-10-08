@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 
 import pandas as pd
@@ -19,6 +20,41 @@ def load_config(path: str) -> dict[str, Any]:
         raise LoaderError(
             f"config: horizon/start_date,end_date mancanti o non validi: {exc}"
         )
+
+    defaults = cfg.get("defaults")
+    if defaults is None:
+        defaults = {}
+        cfg["defaults"] = defaults
+    if not isinstance(defaults, dict):
+        raise LoaderError("config: defaults deve essere un dizionario valido")
+
+    if "weekly_rest_min_h" in defaults:
+        warnings.warn(
+            "config: defaults.weekly_rest_min_h è deprecato e verrà ignorato; "
+            "utilizzare defaults.weekly_rest_min_days",
+            stacklevel=2,
+        )
+        defaults.pop("weekly_rest_min_h", None)
+
+    weekly_rest_min_days = defaults.get("weekly_rest_min_days", 1)
+    if weekly_rest_min_days is None:
+        weekly_rest_min_days = 1
+
+    if isinstance(weekly_rest_min_days, bool) or not isinstance(
+        weekly_rest_min_days, int
+    ):
+        raise LoaderError(
+            "config: defaults.weekly_rest_min_days deve essere un intero ≥ 0 "
+            f"(trovato: {weekly_rest_min_days!r})"
+        )
+    if weekly_rest_min_days < 0:
+        raise LoaderError(
+            "config: defaults.weekly_rest_min_days deve essere un intero ≥ 0 "
+            f"(trovato: {weekly_rest_min_days!r})"
+        )
+
+    defaults["weekly_rest_min_days"] = weekly_rest_min_days
+
     return cfg
 
 

@@ -5,11 +5,11 @@ horizon:
 rest_rules:
   min_between_shifts_h: 11
   post_night_rest_h: 48
-  weekly_rest_min_h: 24
 
 defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
   departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
+  weekly_rest_min_days: 1
   contract_hours_by_role_h:
     infermiere: 168
     oss: 168
