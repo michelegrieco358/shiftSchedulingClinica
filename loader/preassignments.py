@@ -207,11 +207,14 @@ def validate_preassignments(
         )
 
     if shift_role_eligibility is not None and not shift_role_eligibility.empty:
-        elig = shift_role_eligibility.loc[:, ["shift_id", "ruolo"]].copy()
-        elig["shift_id"] = elig["shift_id"].astype(str).str.strip()
-        elig["ruolo"] = elig["ruolo"].astype(str).str.strip()
-        elig = elig.drop_duplicates().rename(
-            columns={"shift_id": "shift_code", "ruolo": "employee_ruolo"}
+        elig = shift_role_eligibility.loc[:, ["shift_code", "role", "allowed"]].copy()
+        elig = elig.loc[elig["allowed"].fillna(False).astype(bool)]
+        elig["shift_code"] = elig["shift_code"].astype(str).str.strip()
+        elig["role"] = elig["role"].astype(str).str.strip()
+        elig = (
+            elig.drop_duplicates(subset=["shift_code", "role"])
+            .rename(columns={"role": "employee_ruolo"})
+            .drop(columns=["allowed"])
         )
 
         merged = merged.merge(

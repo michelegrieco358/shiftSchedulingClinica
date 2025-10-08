@@ -44,6 +44,11 @@ def load_employees(
             f"employees.csv: employee_id duplicati:\n{dups[['employee_id','nome','ruolo']]}"
         )
 
+    df["ruolo"] = df["ruolo"].astype(str).str.strip()
+    # Esponiamo anche la colonna standardizzata `role` per compatibilita' con le
+    # pipeline di pre-processing.
+    df["role"] = df["ruolo"]
+
     allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=df["ruolo"].unique())
 
     bad_roles = sorted(set(df["ruolo"].unique()) - set(allowed_roles))
@@ -339,6 +344,7 @@ def load_employees(
         "employee_id",
         "nome",
         "ruolo",
+        "role",
         "reparto_id",
         "dovuto_min",
         "saldo_init_min",
