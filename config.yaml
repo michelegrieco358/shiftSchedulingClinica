@@ -20,6 +20,8 @@ defaults:
   overstaffing:
     enabled: true
     group_cap_default: 0
+  balance:
+    max_balance_delta_month_h: 0
   night:
     can_work_night: true
     max_per_week: 2
