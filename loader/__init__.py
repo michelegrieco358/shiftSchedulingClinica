@@ -35,7 +35,7 @@ from .employees import (
     load_role_dept_pools,
 )
 from .pools import derive_allowed_reparti, load_pools
-from .gap_pairs import build_gap_pairs
+from .gap_pairs import build_gap_pairs, build_gap_pairs_pool
 from .history import load_history
 from .leaves import load_leaves
 from .preassignments import (
