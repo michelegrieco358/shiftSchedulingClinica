@@ -467,13 +467,15 @@ def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
         The baseline full-time monthly hours as a float.
 
     Raises:
-        ValueError: If the payroll configuration is missing, malformed, or does not
+        ValueError: If the configuration is missing, malformed, or does not
             provide a baseline for the requested role/default. Also raised when the
             resolved baseline is not a positive number.
     """
 
     payroll_cfg = config.get("payroll")
-    if not isinstance(payroll_cfg, dict):
+    if payroll_cfg is None:
+        payroll_cfg = {}
+    elif not isinstance(payroll_cfg, dict):
         raise ValueError("config['payroll'] deve essere un dizionario valido")
 
     raw_by_role = payroll_cfg.get("fulltime_hours_mensili_by_role")
@@ -484,26 +486,52 @@ def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
             "config['payroll']['fulltime_hours_mensili_by_role'] deve essere un dizionario"
         )
 
+    defaults_cfg = config.get("defaults")
+    contract_by_role_cfg: dict[str, object] = {}
+    if isinstance(defaults_cfg, dict):
+        contract_cfg = defaults_cfg.get("contract_hours_by_role_h")
+        if isinstance(contract_cfg, dict):
+            contract_by_role_cfg = {
+                str(k).strip(): contract_cfg[k]
+                for k in contract_cfg
+                if str(k).strip()
+            }
+
     role_key = role.strip() if isinstance(role, str) else None
+
+    candidate = None
+    candidate_source = None
+
     if role_key:
-        candidate = raw_by_role.get(role_key)
-        candidate_source = f"payroll.fulltime_hours_mensili_by_role[{role_key}]"
-    else:
-        candidate = None
-        candidate_source = "payroll.fulltime_hours_mensili_default"
+        lookup_key = role_key
+        if lookup_key in raw_by_role:
+            candidate = raw_by_role[lookup_key]
+            candidate_source = f"payroll.fulltime_hours_mensili_by_role[{lookup_key}]"
+        elif lookup_key in contract_by_role_cfg:
+            candidate = contract_by_role_cfg[lookup_key]
+            candidate_source = f"defaults.contract_hours_by_role_h[{lookup_key}]"
 
     if candidate is None:
-        candidate = payroll_cfg.get("fulltime_hours_mensili_default")
-        candidate_source = "payroll.fulltime_hours_mensili_default"
+        payroll_default = payroll_cfg.get("fulltime_hours_mensili_default")
+        if payroll_default is not None:
+            candidate = payroll_default
+            candidate_source = "payroll.fulltime_hours_mensili_default"
+
+    if candidate is None and not role_key and contract_by_role_cfg:
+        first_key = next(iter(contract_by_role_cfg))
+        candidate = contract_by_role_cfg[first_key]
+        candidate_source = f"defaults.contract_hours_by_role_h[{first_key}]"
 
     if candidate is None:
         if role_key:
             raise ValueError(
                 "Baseline full-time mancante per ruolo "
-                f"'{role_key}' e nessun default in config['payroll']"
+                f"'{role_key}': specificare payroll.fulltime_hours_mensili_by_role "
+                "oppure defaults.contract_hours_by_role_h."
             )
         raise ValueError(
-            "config['payroll'] deve specificare 'fulltime_hours_mensili_default'"
+            "config['payroll'] deve specificare 'fulltime_hours_mensili_default' "
+            "oppure defaults.contract_hours_by_role_h."
         )
 
     try:

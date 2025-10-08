@@ -43,7 +43,7 @@ def build_calendar(
         holiday_map = holidays_unique.set_index("date")["name"]
         holiday_desc_col = cal["data_dt"].map(holiday_map).fillna("")
     cal["holiday_desc"] = holiday_desc_col.astype(str)
-    cal["is_weekday_holiday"] = cal["holiday_desc"].str.strip().ne("")
+    cal["is_weekday_holiday"] = cal["holiday_desc"].str.strip().ne("") & ~cal["is_weekend"]
     return cal
 
 

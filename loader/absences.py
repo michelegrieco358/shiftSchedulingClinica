@@ -115,7 +115,7 @@ def explode_absences_by_day(
             )
 
     exploded = pd.DataFrame.from_records(records)
-    exploded = exploded.drop_duplicates(subset=["employee_id", "date"], keep="first")
+    exploded = exploded.drop_duplicates(subset=["employee_id", "date"], keep="last")
     exploded = exploded.sort_values(["employee_id", "date"]).reset_index(drop=True)
 
     return exploded
