@@ -36,6 +36,11 @@ from .employees import (
 from .gap_pairs import build_gap_pairs
 from .history import load_history
 from .leaves import load_leaves
+from .preassignments import (
+    load_preassignments,
+    split_preassignments,
+    validate_preassignments,
+)
 from .shifts import (
     build_shift_slots,
     load_department_shift_map,
@@ -65,6 +70,9 @@ class LoadedData:
     role_dept_pools_df: pd.DataFrame
     dept_compat_df: pd.DataFrame
     gap_pairs_df: pd.DataFrame
+    preassignments_df: pd.DataFrame
+    preassign_must_df: pd.DataFrame
+    preassign_forbid_df: pd.DataFrame
 
 
 def load_all(config_path: str, data_dir: str) -> LoadedData:
@@ -176,6 +184,35 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         shifts_df,
     )
 
+    absences_by_day_df: pd.DataFrame | None = None
+    if not leaves_days_df.empty and "is_leave_day" in leaves_days_df.columns:
+        mask = leaves_days_df["is_leave_day"].fillna(False).astype(bool)
+        if mask.any():
+            absences_by_day_df = (
+                leaves_days_df.loc[mask, ["employee_id", "data_dt"]]
+                .assign(date=lambda df: pd.to_datetime(df["data_dt"]).dt.date)
+                .loc[:, ["employee_id", "date"]]
+                .drop_duplicates()
+                .reset_index(drop=True)
+            )
+
+    preassignments_raw_df = load_preassignments(
+        os.path.join(data_dir, "preassignments.csv")
+    )
+    preassign_cfg = cfg.get("preassignments", {})
+    if not isinstance(preassign_cfg, dict):
+        preassign_cfg = {}
+    cross_reparto_cfg = preassign_cfg.get("allow_cross_reparto", False)
+    preassignments_df = validate_preassignments(
+        preassignments_raw_df,
+        employees_df,
+        shift_slots_df,
+        absences_by_day=absences_by_day_df,
+        shift_role_eligibility=eligibility_df,
+        cross_reparto_enabled=bool(cross_reparto_cfg),
+    )
+    preassign_must_df, preassign_forbid_df = split_preassignments(preassignments_df)
+
     return LoadedData(
         cfg=cfg,
         calendar_df=calendar_df,
@@ -195,6 +232,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         role_dept_pools_df=role_dept_pools_df,
         dept_compat_df=dept_compat_df,
         gap_pairs_df=gap_pairs_df,
+        preassignments_df=preassignments_df,
+        preassign_must_df=preassign_must_df,
+        preassign_forbid_df=preassign_forbid_df,
     )
 
 
@@ -209,4 +249,7 @@ __all__ = [
     "get_absence_hours_from_config",
     "enrich_shift_slots_calendar",
     "load_absences",
+    "load_preassignments",
+    "split_preassignments",
+    "validate_preassignments",
 ]
