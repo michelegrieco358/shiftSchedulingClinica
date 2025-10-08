@@ -33,24 +33,70 @@ def _to_naive_utc(series: pd.Series) -> pd.Series:
     return series.dt.tz_convert("UTC").dt.tz_localize(None)
 
 
+def _iso_year_week_of(ts: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Restituisce (iso_year, iso_week) da una Series datetime tz-aware."""
+
+    if not pd.api.types.is_datetime64tz_dtype(ts):
+        raise TypeError("La serie deve contenere datetime tz-aware")
+
+    iso = ts.dt.isocalendar()
+    return iso["year"], iso["week"]
+
+
 def build_gap_pairs(
     shift_slots: pd.DataFrame,
     max_check_window_h: int = 15,
+    handover_minutes: int = 0,
     *,
-    add_debug: bool = False,
+    add_debug: bool = True,
 ) -> pd.DataFrame:
     """Costruisce la tabella delle coppie di slot incompatibili per riposo."""
 
     if max_check_window_h <= 0:
         raise ValueError("max_check_window_h deve essere positivo")
+    if handover_minutes < 0:
+        raise ValueError("handover_minutes deve essere >= 0")
 
     _ensure_required_columns(shift_slots, REQUIRED_COLUMNS)
 
+    has_shift_code = "shift_code" in shift_slots.columns
+    has_in_scope = "in_scope" in shift_slots.columns
+
+    reparto_dtype = shift_slots["reparto_id"].dtype if "reparto_id" in shift_slots else "object"
+    slot_dtype = shift_slots["slot_id"].dtype if "slot_id" in shift_slots else "int64"
+
+    base_columns = {
+        "reparto_id": pd.Series(dtype=reparto_dtype),
+        "s1_id": pd.Series(dtype=slot_dtype),
+        "s2_id": pd.Series(dtype=slot_dtype),
+        "gap_hours": pd.Series(dtype="float64"),
+    }
+
+    if add_debug:
+        tz_dtype = pd.DatetimeTZDtype(tz="Europe/Rome")
+        debug_columns: dict[str, pd.Series] = {
+            "s1_end_dt": pd.Series(dtype=tz_dtype),
+            "s2_start_dt": pd.Series(dtype=tz_dtype),
+            "s1_end_date": pd.Series(dtype="object"),
+            "s2_start_date": pd.Series(dtype="object"),
+            "s1_iso_year": pd.Series(dtype=pd.UInt32Dtype()),
+            "s1_iso_week": pd.Series(dtype=pd.UInt32Dtype()),
+            "s2_iso_year": pd.Series(dtype=pd.UInt32Dtype()),
+            "s2_iso_week": pd.Series(dtype=pd.UInt32Dtype()),
+        }
+        if has_shift_code:
+            shift_dtype = shift_slots["shift_code"].dtype
+            debug_columns["s1_shift_code"] = pd.Series(dtype=shift_dtype)
+            debug_columns["s2_shift_code"] = pd.Series(dtype=shift_dtype)
+        if has_in_scope:
+            scope_dtype = shift_slots["in_scope"].dtype
+            debug_columns["s1_in_scope"] = pd.Series(dtype=scope_dtype)
+            debug_columns["s2_in_scope"] = pd.Series(dtype=scope_dtype)
+            debug_columns["pair_crosses_scope"] = pd.Series(dtype="bool")
+        base_columns.update(debug_columns)
+
     if shift_slots.empty:
-        columns = ["reparto_id", "s1_id", "s2_id", "gap_hours"]
-        if add_debug:
-            columns += ["s1_end_dt", "s2_start_dt"]
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(base_columns)
 
     result_frames: list[pd.DataFrame] = []
 
@@ -90,40 +136,69 @@ def build_gap_pairs(
         s2_start = group_sorted["start_dt"].iloc[s2_idx].reset_index(drop=True)
 
         gap_delta = s2_start - s1_end
-        gap_hours = gap_delta.dt.total_seconds() / 3600.0
+        gap_hours = gap_delta.dt.total_seconds().to_numpy() / 3600.0
 
-        valid_mask = gap_hours > 0
-        valid_mask &= gap_hours <= float(max_check_window_h)
+        handover_hours = handover_minutes / 60.0
+        gap_hours_eff = np.maximum(gap_hours - handover_hours, 0.0)
 
-        if not valid_mask.any():
+        valid_mask = (gap_hours_eff > 0) & (gap_hours_eff <= float(max_check_window_h))
+
+        if not np.any(valid_mask):
             continue
+
+        s1_valid = s1_idx[valid_mask]
+        s2_valid = s2_idx[valid_mask]
+
+        gap_valid = gap_hours_eff[valid_mask]
 
         pairs_df = pd.DataFrame(
             {
                 "reparto_id": reparto_id,
-                "s1_id": group_sorted["slot_id"].iloc[s1_idx].to_numpy(),
-                "s2_id": group_sorted["slot_id"].iloc[s2_idx].to_numpy(),
-                "gap_hours": gap_hours,
+                "s1_id": group_sorted["slot_id"].iloc[s1_valid].to_numpy(),
+                "s2_id": group_sorted["slot_id"].iloc[s2_valid].to_numpy(),
+                "gap_hours": gap_valid,
             }
         )
 
         if add_debug:
-            pairs_df["s1_end_dt"] = s1_end.to_numpy()
-            pairs_df["s2_start_dt"] = s2_start.to_numpy()
+            s1_end_valid = s1_end.iloc[valid_mask].reset_index(drop=True)
+            s2_start_valid = s2_start.iloc[valid_mask].reset_index(drop=True)
 
-        result_frames.append(pairs_df.loc[valid_mask].reset_index(drop=True))
+            pairs_df["s1_end_dt"] = s1_end_valid
+            pairs_df["s2_start_dt"] = s2_start_valid
+            pairs_df["s1_end_date"] = s1_end_valid.dt.date
+            pairs_df["s2_start_date"] = s2_start_valid.dt.date
+
+            s1_iso_year, s1_iso_week = _iso_year_week_of(s1_end_valid)
+            s2_iso_year, s2_iso_week = _iso_year_week_of(s2_start_valid)
+            pairs_df["s1_iso_year"] = s1_iso_year.reset_index(drop=True)
+            pairs_df["s1_iso_week"] = s1_iso_week.reset_index(drop=True)
+            pairs_df["s2_iso_year"] = s2_iso_year.reset_index(drop=True)
+            pairs_df["s2_iso_week"] = s2_iso_week.reset_index(drop=True)
+
+            if has_shift_code:
+                s1_shift = group_sorted["shift_code"].iloc[s1_valid].reset_index(drop=True)
+                s2_shift = group_sorted["shift_code"].iloc[s2_valid].reset_index(drop=True)
+                pairs_df["s1_shift_code"] = s1_shift
+                pairs_df["s2_shift_code"] = s2_shift
+
+            if has_in_scope:
+                s1_scope = group_sorted["in_scope"].iloc[s1_valid].reset_index(drop=True)
+                s2_scope = group_sorted["in_scope"].iloc[s2_valid].reset_index(drop=True)
+                pairs_df["s1_in_scope"] = s1_scope
+                pairs_df["s2_in_scope"] = s2_scope
+                pairs_df["pair_crosses_scope"] = (~s1_scope.fillna(False)) & s2_scope.fillna(False)
+
+        result_frames.append(pairs_df.reset_index(drop=True))
 
     if not result_frames:
-        columns = ["reparto_id", "s1_id", "s2_id", "gap_hours"]
-        if add_debug:
-            columns += ["s1_end_dt", "s2_start_dt"]
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(base_columns)
 
     result_df = pd.concat(result_frames, ignore_index=True)
-    result_df = result_df.drop_duplicates(subset=["s1_id", "s2_id"])
+    result_df = result_df.drop_duplicates(subset=["reparto_id", "s1_id", "s2_id"])
     result_df = result_df.sort_values(["reparto_id", "s1_id", "s2_id"]).reset_index(drop=True)
 
     return result_df
 
 
-__all__ = ["build_gap_pairs"]
+__all__ = ["build_gap_pairs", "_iso_year_week_of"]
