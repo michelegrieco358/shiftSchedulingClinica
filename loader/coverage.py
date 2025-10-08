@@ -113,18 +113,47 @@ def load_coverage_roles(path: str) -> pd.DataFrame:
     """Carica la tabella dei requisiti minimi per ruolo includendo il reparto."""
 
     df = pd.read_csv(path, dtype=str).fillna("").copy()
-    _ensure_cols(
-        df,
-        {"coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo", "min_ruolo"},
-        "coverage_roles.csv",
-    )
+
+    base_required = {
+        "coverage_code",
+        "shift_code",
+        "reparto_id",
+        "gruppo",
+        "min_ruolo",
+    }
+    missing_base = base_required - set(df.columns)
+    if missing_base:
+        raise LoaderError(
+            "coverage_roles.csv: colonne mancanti: " + ", ".join(sorted(missing_base))
+        )
+
+    role_columns = [col for col in ("role", "ruolo") if col in df.columns]
+    if not role_columns:
+        raise LoaderError(
+            "coverage_roles.csv: è richiesta la colonna 'role' (o il legacy 'ruolo')"
+        )
+    if len(role_columns) == 2:
+        legacy = df["ruolo"].astype(str).str.strip()
+        modern = df["role"].astype(str).str.strip()
+        mismatch = legacy.ne(modern) & ~(legacy.eq("") & modern.eq(""))
+        if mismatch.any():
+            rows = ", ".join(str(i + 2) for i in mismatch[mismatch].index.tolist())
+            raise LoaderError(
+                "coverage_roles.csv: colonne 'role' e 'ruolo' con valori diversi alle righe "
+                f"[{rows}]"
+            )
+    role_source = role_columns[0]
+    if role_source != "role":
+        df = df.rename(columns={role_source: "role"})
+    if "ruolo" in df.columns:
+        df = df.drop(columns=["ruolo"])
 
     df = df.assign(
         coverage_code=df["coverage_code"].astype(str).str.strip().str.upper(),
         shift_code=df["shift_code"].astype(str).str.strip().str.upper(),
         reparto_id=df["reparto_id"].astype(str).str.strip().str.upper(),
         gruppo=df["gruppo"].astype(str).str.strip().str.upper(),
-        ruolo=df["ruolo"].astype(str).str.strip().str.upper(),
+        role=df["role"].astype(str).str.strip().str.upper(),
     )
 
     blank_reparto = df["reparto_id"] == ""
@@ -138,16 +167,16 @@ def load_coverage_roles(path: str) -> pd.DataFrame:
     df["min_ruolo"] = pd.to_numeric(df["min_ruolo"], errors="raise").astype(int)
 
     dup_mask = df.duplicated(
-        subset=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"], keep=False
+        subset=["coverage_code", "shift_code", "reparto_id", "gruppo", "role"], keep=False
     )
     if dup_mask.any():
         keys = (
-            df.loc[dup_mask, ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]]
+            df.loc[dup_mask, ["coverage_code", "shift_code", "reparto_id", "gruppo", "role"]]
             .drop_duplicates()
-            .sort_values(["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"])
+            .sort_values(["coverage_code", "shift_code", "reparto_id", "gruppo", "role"])
         )
         raise ValueError(
-            "coverage_roles.csv: duplicati su (coverage_code, shift_code, reparto_id, gruppo, ruolo): "
+            "coverage_roles.csv: duplicati su (coverage_code, shift_code, reparto_id, gruppo, role): "
             f"{keys.to_dict(orient='records')}"
         )
 
@@ -167,7 +196,7 @@ def validate_groups_roles(
         validate="many_to_one",
     )
     missing_grp = r_join[r_join["_merge"] == "left_only"][
-        ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+        ["coverage_code", "shift_code", "reparto_id", "gruppo", "role"]
     ].drop_duplicates()
     if not missing_grp.empty:
         raise LoaderError(
@@ -180,17 +209,17 @@ def validate_groups_roles(
     ].copy()
 
     er = roles.merge(
-        elig_allowed.rename(columns={"role": "ruolo"}),
-        on=["shift_code", "ruolo"],
+        elig_allowed,
+        on=["shift_code", "role"],
         how="left",
         indicator=True,
     )
     bad = er[er["_merge"] == "left_only"][
-        ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+        ["coverage_code", "shift_code", "reparto_id", "gruppo", "role"]
     ].drop_duplicates()
     if not bad.empty:
         raise LoaderError(
-            "coverage_roles.csv: (shift_code,ruolo) non idoneo secondo shift_role_eligibility:\n"
+            "coverage_roles.csv: (shift_code,role) non idoneo secondo shift_role_eligibility:\n"
             f"{bad}"
         )
 
@@ -208,16 +237,16 @@ def validate_groups_roles(
             )
     if rows:
         total_roles_df = pd.DataFrame(
-            rows, columns=["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+            rows, columns=["coverage_code", "shift_code", "reparto_id", "gruppo", "role"]
         )
         tr = total_roles_df.merge(
-            elig_allowed.rename(columns={"role": "ruolo"}),
-            on=["shift_code", "ruolo"],
+            elig_allowed,
+            on=["shift_code", "role"],
             how="left",
             indicator=True,
         )
         bad2 = tr[tr["_merge"] == "left_only"][
-            ["coverage_code", "shift_code", "reparto_id", "gruppo", "ruolo"]
+            ["coverage_code", "shift_code", "reparto_id", "gruppo", "role"]
         ].drop_duplicates()
         if not bad2.empty:
             raise LoaderError(
@@ -226,12 +255,12 @@ def validate_groups_roles(
             )
 
     not_in_set = r_join[
-        ~r_join.apply(lambda r: r["ruolo"] in set(r["ruoli_totale_list"] or []), axis=1)
+        ~r_join.apply(lambda r: r["role"] in set(r["ruoli_totale_list"] or []), axis=1)
     ]
     if not not_in_set.empty:
         raise LoaderError(
             "coverage_roles.csv: ruoli non inclusi in ruoli_totale_list del gruppo corrispondente:\n"
-            f"{not_in_set[['coverage_code','shift_code','reparto_id','gruppo','ruolo']].drop_duplicates()}"
+            f"{not_in_set[['coverage_code','shift_code','reparto_id','gruppo','role']].drop_duplicates()}"
         )
 
     sums = (
@@ -313,11 +342,11 @@ def expand_requirements(
         "shift_code",
         "coverage_code",
         "gruppo",
-        "ruolo",
+        "role",
         "min_ruolo",
     ]
     gr = gr[ordered_cols_roles].sort_values(
-        ["data", "reparto_id", "shift_code", "coverage_code", "gruppo", "ruolo"]
+        ["data", "reparto_id", "shift_code", "coverage_code", "gruppo", "role"]
     )
 
     return gt.reset_index(drop=True).copy(), gr.reset_index(drop=True).copy()
@@ -329,11 +358,11 @@ def build_slot_requirements(
     """Costruisce la domanda per ruolo per ciascuno slot, distinguendo per reparto."""
 
     if slots_df.empty or coverage_roles_df.empty:
-        return pd.DataFrame(columns=["slot_id", "reparto_id", "ruolo", "demand"])
+        return pd.DataFrame(columns=["slot_id", "reparto_id", "role", "demand"])
 
     grouped = (
         coverage_roles_df.groupby(
-            ["coverage_code", "shift_code", "reparto_id", "ruolo"], as_index=False
+            ["coverage_code", "shift_code", "reparto_id", "role"], as_index=False
         )["min_ruolo"]
         .sum()
         .rename(columns={"min_ruolo": "demand"})
@@ -368,9 +397,9 @@ def build_slot_requirements(
 
     merged = merged.assign(demand=merged["demand"].astype(int))
 
-    ordered = ["slot_id", "reparto_id", "ruolo", "demand"]
+    ordered = ["slot_id", "reparto_id", "role", "demand"]
     extra_cols = [c for c in merged.columns if c not in ordered]
     out_cols = ordered + extra_cols
 
-    out = merged[out_cols].sort_values(["slot_id", "reparto_id", "ruolo"])
+    out = merged[out_cols].sort_values(["slot_id", "reparto_id", "role"])
     return out.reset_index(drop=True).copy()
