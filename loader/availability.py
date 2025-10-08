@@ -5,7 +5,7 @@ import os
 import pandas as pd
 
 from .calendar import attach_calendar
-from .utils import LoaderError, _ensure_cols
+from .utils import LoaderError, _compute_horizon_window, _ensure_cols
 
 
 def load_availability(
@@ -94,11 +94,6 @@ def load_availability(
     out = pd.DataFrame(rows).drop_duplicates(subset=["data", "employee_id", "turno"]).reset_index(drop=True)
 
     out = attach_calendar(out, calendar_df)
-    if (~out["is_in_horizon"].astype(bool)).any():
-        outside = out[~out["is_in_horizon"].astype(bool)][["data", "employee_id", "turno"]]
-        raise LoaderError(
-            f"availability.csv: presenti righe fuori orizzonte:\n{outside.head()}"
-        )
 
     shift_cols = ["shift_id", "start_time", "end_time", "duration_min", "crosses_midnight"]
     shift_info = shifts_df[shift_cols].rename(
@@ -115,7 +110,18 @@ def load_availability(
     out["shift_start_dt"] = out["data_dt"] + out["shift_start_time"]
     out["shift_end_dt"] = out["data_dt"] + out["shift_end_time"]
     crosses_mask = out["shift_crosses_midnight"].fillna(0).astype(int) == 1
-    out.loc[crosses_mask, "shift_end_dt"] = out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+    out.loc[crosses_mask, "shift_end_dt"] = (
+        out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
+    )
+
+    horizon_start, horizon_end = _compute_horizon_window(calendar_df)
+    overlaps = out["shift_start_dt"].notna() & out["shift_end_dt"].notna()
+    overlaps &= out["shift_end_dt"] > horizon_start
+    overlaps &= out["shift_start_dt"] < horizon_end
+
+    in_horizon = out["is_in_horizon"].astype("boolean", copy=False).fillna(False)
+    keep_mask = in_horizon.astype(bool) | overlaps
+    out = out.loc[keep_mask].copy()
 
     return out[[
         "data",

@@ -80,3 +80,38 @@ def _resolve_allowed_departments(defaults: dict) -> list[str]:
             seen.add(dept)
             deduped.append(dept)
     return deduped
+
+
+def _compute_horizon_window(calendar_df: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the inclusive horizon bounds derived from ``calendar_df``."""
+
+    if calendar_df.empty:
+        raise LoaderError("calendar_df non può essere vuoto per calcolare l'orizzonte")
+
+    if "data_dt" in calendar_df.columns:
+        dates = pd.to_datetime(calendar_df["data_dt"])
+    elif "data" in calendar_df.columns:
+        dates = pd.to_datetime(calendar_df["data"], errors="coerce")
+    else:
+        raise LoaderError(
+            "calendar_df deve contenere la colonna 'data_dt' (o 'data') per determinare l'orizzonte"
+        )
+
+    if dates.isna().all():
+        raise LoaderError("calendar_df contiene solo date non valide")
+
+    horizon_mask = calendar_df.get("is_in_horizon")
+    if horizon_mask is not None:
+        horizon_mask = horizon_mask.astype(bool)
+    else:
+        horizon_mask = pd.Series(False, index=calendar_df.index)
+
+    if horizon_mask.any():
+        horizon_dates = dates.loc[horizon_mask]
+        start = horizon_dates.min().normalize()
+        end = horizon_dates.max().normalize() + pd.Timedelta(days=1)
+    else:
+        start = dates.min().normalize()
+        end = dates.max().normalize() + pd.Timedelta(days=1)
+
+    return pd.Timestamp(start), pd.Timestamp(end)

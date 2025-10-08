@@ -524,22 +524,22 @@ def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
         The baseline full-time monthly hours as a float.
 
     Raises:
-        ValueError: If the configuration is missing, malformed, or does not
-            provide a baseline for the requested role/default. Also raised when the
-            resolved baseline is not a positive number.
+        LoaderError: If the configuration is missing, malformed, o non fornisce
+            un baseline per il ruolo richiesto/default. Sollevata anche quando il
+            valore risolto non è un numero positivo.
     """
 
     payroll_cfg = config.get("payroll")
     if payroll_cfg is None:
         payroll_cfg = {}
     elif not isinstance(payroll_cfg, dict):
-        raise ValueError("config['payroll'] deve essere un dizionario valido")
+        raise LoaderError("config['payroll'] deve essere un dizionario valido")
 
     raw_by_role = payroll_cfg.get("fulltime_hours_mensili_by_role")
     if raw_by_role is None:
         raw_by_role = {}
     elif not isinstance(raw_by_role, dict):
-        raise ValueError(
+        raise LoaderError(
             "config['payroll']['fulltime_hours_mensili_by_role'] deve essere un dizionario"
         )
 
@@ -581,12 +581,12 @@ def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
 
     if candidate is None:
         if role_key:
-            raise ValueError(
+            raise LoaderError(
                 "Baseline full-time mancante per ruolo "
                 f"'{role_key}': specificare payroll.fulltime_hours_mensili_by_role "
                 "oppure defaults.contract_hours_by_role_h."
             )
-        raise ValueError(
+        raise LoaderError(
             "config['payroll'] deve specificare 'fulltime_hours_mensili_default' "
             "oppure defaults.contract_hours_by_role_h."
         )
@@ -594,10 +594,10 @@ def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
     try:
         baseline = float(candidate)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Valore non numerico per {candidate_source}: {candidate!r}") from exc
+        raise LoaderError(f"Valore non numerico per {candidate_source}: {candidate!r}") from exc
 
     if baseline <= 0:
-        raise ValueError(f"Il baseline full-time deve essere positivo ({baseline})")
+        raise LoaderError(f"Il baseline full-time deve essere positivo ({baseline})")
 
     return baseline
 
