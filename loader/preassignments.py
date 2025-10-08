@@ -7,78 +7,222 @@ import pandas as pd
 
 
 _REQUIRED_COLUMNS = {"employee_id", "slot_id", "lock"}
+_LOCK_TYPE_MAP = {"MUST_DO": 1, "FORBIDDEN": -1}
 
 
-def load_preassignments(path: str) -> pd.DataFrame:
-    """Load and validate preassignment locks from ``preassignments.csv``."""
+def load_preassignments(
+    path: str,
+    shift_slots: pd.DataFrame | None = None,
+    *,
+    locks_path: str | None = None,
+) -> pd.DataFrame:
+    """Load and validate preassignment locks from ``preassignments.csv`` and ``locks.csv``."""
 
-    if not os.path.exists(path):
+    records: list[pd.DataFrame] = []
+    preassign_count = 0
+    locks_count = 0
+
+    if os.path.exists(path):
+        df = pd.read_csv(path, dtype=str).fillna("")
+
+        missing = _REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise ValueError(
+                "preassignments.csv: colonne mancanti: " + str(sorted(missing))
+            )
+
+        columns_order = [
+            "employee_id",
+            "slot_id",
+            "lock",
+            *[col for col in df.columns if col not in _REQUIRED_COLUMNS],
+        ]
+        work_df = df.loc[:, columns_order].copy()
+
+        work_df["employee_id"] = work_df["employee_id"].astype(str).str.strip()
+        if work_df["employee_id"].eq("").any():
+            bad_idx = work_df.index[work_df["employee_id"].eq("")].tolist()[:5]
+            raise ValueError(
+                "preassignments.csv: employee_id non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+
+        slot_series = work_df["slot_id"].astype(str).str.strip()
+        if slot_series.eq("").any():
+            bad_idx = work_df.index[slot_series.eq("")].tolist()[:5]
+            raise ValueError(
+                "preassignments.csv: slot_id non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+        try:
+            work_df["slot_id"] = pd.to_numeric(slot_series, errors="raise").astype(
+                "int64"
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "preassignments.csv: slot_id deve essere numerico intero"
+            ) from exc
+
+        lock_series = work_df["lock"].astype(str).str.strip()
+        if lock_series.eq("").any():
+            bad_idx = work_df.index[lock_series.eq("")].tolist()[:5]
+            raise ValueError(
+                "preassignments.csv: lock non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+        try:
+            work_df["lock"] = pd.to_numeric(lock_series, errors="raise").astype(int)
+        except ValueError as exc:
+            raise ValueError("preassignments.csv: lock deve essere numerico") from exc
+
+        bad_lock = sorted(set(work_df["lock"].unique()) - {1, -1})
+        if bad_lock:
+            raise ValueError(
+                "preassignments.csv: lock deve valere 1 (assegna) o -1 (veto). "
+                f"Valori non validi: {bad_lock}"
+            )
+
+        if "note" in work_df.columns:
+            work_df["note"] = work_df["note"].astype(str).str.strip()
+
+        work_df = work_df.drop_duplicates().reset_index(drop=True)
+        preassign_count = len(work_df)
+        records.append(work_df)
+    else:
+        warnings.warn(
+            "preassignments.csv non trovato: caricati 0 record da preassignments.csv",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    locks_file = locks_path
+    if locks_file is None:
+        locks_file = os.path.join(os.path.dirname(path), "locks.csv")
+
+    if locks_file and os.path.exists(locks_file):
+        if shift_slots is None or shift_slots.empty:
+            raise ValueError(
+                "locks.csv: impossibile risolvere gli slot senza shift_slots caricati"
+            )
+
+        locks_df = pd.read_csv(locks_file, dtype=str).fillna("")
+        required_cols = {"date", "reparto_id", "shift_code", "employee_id", "lock_type"}
+        missing = required_cols - set(locks_df.columns)
+        if missing:
+            raise ValueError(
+                "locks.csv: colonne mancanti: " + str(sorted(missing))
+            )
+
+        locks_columns = ["date", "reparto_id", "shift_code", "employee_id", "lock_type"]
+        locks_df = locks_df.loc[:, locks_columns].copy()
+        locks_df["employee_id"] = locks_df["employee_id"].astype(str).str.strip()
+        if locks_df["employee_id"].eq("").any():
+            bad_idx = locks_df.index[locks_df["employee_id"].eq("")].tolist()[:5]
+            raise ValueError(
+                "locks.csv: employee_id non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+
+        date_series = pd.to_datetime(locks_df["date"], errors="coerce")
+        if date_series.isna().any():
+            bad_idx = locks_df.index[date_series.isna()].tolist()[:5]
+            raise ValueError(
+                "locks.csv: date non valide per le righe: " + str(bad_idx)
+            )
+        locks_df["date"] = date_series.dt.date
+
+        locks_df["reparto_id"] = locks_df["reparto_id"].astype(str).str.strip()
+        if locks_df["reparto_id"].eq("").any():
+            bad_idx = locks_df.index[locks_df["reparto_id"].eq("")].tolist()[:5]
+            raise ValueError(
+                "locks.csv: reparto_id non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+
+        locks_df["shift_code"] = locks_df["shift_code"].astype(str).str.strip()
+        if locks_df["shift_code"].eq("").any():
+            bad_idx = locks_df.index[locks_df["shift_code"].eq("")].tolist()[:5]
+            raise ValueError(
+                "locks.csv: shift_code non può essere vuoto. "
+                f"Prime occorrenze: {bad_idx}"
+            )
+
+        lock_map = locks_df["lock_type"].astype(str).str.strip()
+        invalid = sorted(set(lock_map.unique()) - set(_LOCK_TYPE_MAP))
+        if invalid:
+            raise ValueError(
+                "locks.csv: lock_type deve valere 'MUST_DO' o 'FORBIDDEN'. "
+                f"Valori non validi: {invalid}"
+            )
+        locks_df["lock"] = lock_map.map(_LOCK_TYPE_MAP).astype(int)
+
+        slots_lookup = shift_slots.loc[
+            :, ["slot_id", "reparto_id", "shift_code", "start_dt"]
+        ].copy()
+        slots_lookup["slot_id"] = slots_lookup["slot_id"].astype("int64")
+        slots_lookup["reparto_id"] = slots_lookup["reparto_id"].astype(str).str.strip()
+        slots_lookup["shift_code"] = slots_lookup["shift_code"].astype(str).str.strip()
+        start_ts = pd.to_datetime(slots_lookup["start_dt"], errors="coerce")
+        if start_ts.isna().any():
+            raise ValueError(
+                "shift_slots: valori start_dt non validi durante il caricamento di locks.csv"
+            )
+        tz = getattr(start_ts.dt, "tz", None)
+        if tz is not None:
+            start_ts = start_ts.dt.tz_convert(None)
+        slots_lookup["date"] = start_ts.dt.date
+        slots_lookup = slots_lookup.drop(columns=["start_dt"]).drop_duplicates()
+
+        merged = locks_df.merge(
+            slots_lookup,
+            on=["date", "reparto_id", "shift_code"],
+            how="left",
+            validate="many_to_one",
+        )
+
+        missing_slot = merged["slot_id"].isna()
+        if missing_slot.any():
+            missing_rows = (
+                merged.loc[
+                    missing_slot,
+                    ["date", "reparto_id", "shift_code", "employee_id"],
+                ]
+                .drop_duplicates()
+                .to_dict(orient="records")
+            )
+            warnings.warn(
+                "locks.csv: slot non trovato per le combinazioni: "
+                f"{missing_rows}",
+                UserWarning,
+                stacklevel=2,
+            )
+        valid = merged.loc[~missing_slot, ["employee_id", "slot_id", "lock"]].copy()
+        if not valid.empty:
+            valid["slot_id"] = valid["slot_id"].astype("int64")
+            records.append(valid.reset_index(drop=True))
+            locks_count = len(valid)
+    else:
+        warnings.warn(
+            "locks.csv non trovato: caricati 0 record da locks.csv",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if not records:
         return pd.DataFrame(columns=["employee_id", "slot_id", "lock", "note"])
 
-    df = pd.read_csv(path, dtype=str).fillna("")
+    combined = pd.concat(records, ignore_index=True, sort=False)
+    combined["employee_id"] = combined["employee_id"].astype(str).str.strip()
+    combined["slot_id"] = combined["slot_id"].astype("int64")
+    combined["lock"] = combined["lock"].astype(int)
 
-    missing = _REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(
-            "preassignments.csv: colonne mancanti: " + str(sorted(missing))
-        )
+    if "note" not in combined.columns:
+        combined["note"] = ""
 
-    columns_order = [
-        "employee_id",
-        "slot_id",
-        "lock",
-        *[col for col in df.columns if col not in _REQUIRED_COLUMNS],
-    ]
-    work_df = df.loc[:, columns_order].copy()
-
-    work_df["employee_id"] = work_df["employee_id"].astype(str).str.strip()
-    if work_df["employee_id"].eq("").any():
-        bad_idx = work_df.index[work_df["employee_id"].eq("")].tolist()[:5]
-        raise ValueError(
-            "preassignments.csv: employee_id non può essere vuoto. "
-            f"Prime occorrenze: {bad_idx}"
-        )
-
-    slot_series = work_df["slot_id"].astype(str).str.strip()
-    if slot_series.eq("").any():
-        bad_idx = work_df.index[slot_series.eq("")].tolist()[:5]
-        raise ValueError(
-            "preassignments.csv: slot_id non può essere vuoto. "
-            f"Prime occorrenze: {bad_idx}"
-        )
-    try:
-        work_df["slot_id"] = pd.to_numeric(slot_series, errors="raise").astype("int64")
-    except ValueError as exc:
-        raise ValueError(
-            "preassignments.csv: slot_id deve essere numerico intero"
-        ) from exc
-
-    lock_series = work_df["lock"].astype(str).str.strip()
-    if lock_series.eq("").any():
-        bad_idx = work_df.index[lock_series.eq("")].tolist()[:5]
-        raise ValueError(
-            "preassignments.csv: lock non può essere vuoto. "
-            f"Prime occorrenze: {bad_idx}"
-        )
-    try:
-        work_df["lock"] = pd.to_numeric(lock_series, errors="raise").astype(int)
-    except ValueError as exc:
-        raise ValueError("preassignments.csv: lock deve essere numerico") from exc
-
-    bad_lock = sorted(set(work_df["lock"].unique()) - {1, -1})
-    if bad_lock:
-        raise ValueError(
-            "preassignments.csv: lock deve valere 1 (assegna) o -1 (veto). "
-            f"Valori non validi: {bad_lock}"
-        )
-
-    if "note" in work_df.columns:
-        work_df["note"] = work_df["note"].astype(str).str.strip()
-
-    work_df = work_df.drop_duplicates().reset_index(drop=True)
+    combined = combined.drop_duplicates().reset_index(drop=True)
 
     conflicts = (
-        work_df.groupby(["employee_id", "slot_id"])["lock"].nunique().reset_index()
+        combined.groupby(["employee_id", "slot_id"])["lock"].nunique().reset_index()
     )
     conflicts = conflicts[conflicts["lock"] > 1]
     if not conflicts.empty:
@@ -87,13 +231,26 @@ def load_preassignments(path: str) -> pd.DataFrame:
             for row in conflicts.itertuples(index=False)
         ]
         raise ValueError(
-            "preassignments.csv: lock contrastanti per le chiavi specificate: "
-            f"{keys}"
+            "preassignments: lock contrastanti per le chiavi specificate: " + str(keys)
         )
 
-    work_df = work_df.drop_duplicates(subset=["employee_id", "slot_id", "lock"])
+    combined = combined.drop_duplicates(subset=["employee_id", "slot_id", "lock"])
+    columns_order = [
+        "employee_id",
+        "slot_id",
+        "lock",
+        *[col for col in combined.columns if col not in _REQUIRED_COLUMNS],
+    ]
+    combined = combined.loc[:, columns_order].reset_index(drop=True)
 
-    return work_df.reset_index(drop=True)
+    warnings.warn(
+        "preassignments: caricati %s record da preassignments.csv e %s da locks.csv"
+        % (preassign_count, locks_count),
+        UserWarning,
+        stacklevel=2,
+    )
+
+    return combined
 
 
 def validate_preassignments(
