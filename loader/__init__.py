@@ -12,7 +12,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - messaggio esplicativo
     ) from exc
 
 from .availability import load_availability
-from .calendar import attach_calendar, build_calendar
+from .calendar import attach_calendar, build_calendar, enrich_shift_slots_calendar
 from .config import load_config, load_holidays
 from .coverage import (
     build_slot_requirements,
@@ -195,4 +195,7 @@ __all__ = [
     "LoaderError",
     "LoadedData",
     "load_all",
+    "attach_calendar",
+    "build_calendar",
+    "enrich_shift_slots_calendar",
 ]
