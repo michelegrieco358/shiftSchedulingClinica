@@ -296,6 +296,141 @@ def load_employees(
         weekly_rest_values = [global_weekly_rest_min_days] * len(df)
     df["weekly_rest_min_days"] = weekly_rest_values
 
+    rest11h_defaults_cfg = defaults.get("rest11h", {}) or {}
+    try:
+        global_rest11h_monthly = int(rest11h_defaults_cfg.get("max_monthly_exceptions", 0))
+        global_rest11h_consecutive = int(
+            rest11h_defaults_cfg.get("max_consecutive_exceptions", 0)
+        )
+    except (TypeError, ValueError) as exc:  # pragma: no cover - già validato in config
+        raise LoaderError(
+            "config: defaults.rest11h deve contenere interi non negativi"
+        ) from exc
+
+    if global_rest11h_monthly < 0 or global_rest11h_consecutive < 0:
+        raise LoaderError(
+            "config: defaults.rest11h deve contenere interi non negativi"
+        )
+
+    monthly_col_present = "rest11h_max_monthly_exceptions" in df.columns
+    consecutive_col_present = "rest11h_max_consecutive_exceptions" in df.columns
+
+    rest11h_monthly_values: list[int] = []
+    rest11h_consecutive_values: list[int] = []
+
+    for _, row in df.iterrows():
+        employee_id = str(row["employee_id"]).strip()
+
+        monthly_value = global_rest11h_monthly
+        if monthly_col_present:
+            original_value = row["rest11h_max_monthly_exceptions"]
+            raw_value = str(original_value).strip()
+            if raw_value == "":
+                logger.warning(
+                    "employees.csv: rest11h_max_monthly_exceptions vuoto per dipendente %s: "
+                    "uso default %s",
+                    employee_id,
+                    global_rest11h_monthly,
+                )
+                logger.info(
+                    "employees.csv: rest11h_max_monthly_exceptions default applicato per dipendente %s: %s",
+                    employee_id,
+                    global_rest11h_monthly,
+                )
+            else:
+                try:
+                    parsed_monthly = int(raw_value)
+                except ValueError as exc:
+                    logger.warning(
+                        "employees.csv: rest11h_max_monthly_exceptions non numerico per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per rest11h_max_monthly_exceptions per dipendente "
+                        f"{employee_id}: {original_value}"
+                    ) from exc
+                if parsed_monthly < 0:
+                    logger.warning(
+                        "employees.csv: rest11h_max_monthly_exceptions negativo per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per rest11h_max_monthly_exceptions per dipendente "
+                        f"{employee_id}: {original_value}"
+                    )
+                monthly_value = parsed_monthly
+                logger.info(
+                    "employees.csv: rest11h_max_monthly_exceptions override per dipendente %s: %s",
+                    employee_id,
+                    monthly_value,
+                )
+        else:
+            logger.info(
+                "employees.csv: rest11h_max_monthly_exceptions default applicato per dipendente %s: %s",
+                employee_id,
+                global_rest11h_monthly,
+            )
+
+        consecutive_value = global_rest11h_consecutive
+        if consecutive_col_present:
+            original_value = row["rest11h_max_consecutive_exceptions"]
+            raw_value = str(original_value).strip()
+            if raw_value == "":
+                logger.warning(
+                    "employees.csv: rest11h_max_consecutive_exceptions vuoto per dipendente %s: "
+                    "uso default %s",
+                    employee_id,
+                    global_rest11h_consecutive,
+                )
+                logger.info(
+                    "employees.csv: rest11h_max_consecutive_exceptions default applicato per dipendente %s: %s",
+                    employee_id,
+                    global_rest11h_consecutive,
+                )
+            else:
+                try:
+                    parsed_consecutive = int(raw_value)
+                except ValueError as exc:
+                    logger.warning(
+                        "employees.csv: rest11h_max_consecutive_exceptions non numerico per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per rest11h_max_consecutive_exceptions per dipendente "
+                        f"{employee_id}: {original_value}"
+                    ) from exc
+                if parsed_consecutive < 0:
+                    logger.warning(
+                        "employees.csv: rest11h_max_consecutive_exceptions negativo per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per rest11h_max_consecutive_exceptions per dipendente "
+                        f"{employee_id}: {original_value}"
+                    )
+                consecutive_value = parsed_consecutive
+                logger.info(
+                    "employees.csv: rest11h_max_consecutive_exceptions override per dipendente %s: %s",
+                    employee_id,
+                    consecutive_value,
+                )
+        else:
+            logger.info(
+                "employees.csv: rest11h_max_consecutive_exceptions default applicato per dipendente %s: %s",
+                employee_id,
+                global_rest11h_consecutive,
+            )
+
+        rest11h_monthly_values.append(int(monthly_value))
+        rest11h_consecutive_values.append(int(consecutive_value))
+
+    df["rest11h_max_monthly_exceptions"] = rest11h_monthly_values
+    df["rest11h_max_consecutive_exceptions"] = rest11h_consecutive_values
+
     def _coerce_bool(value: Any, label: str, allow_empty: bool = False) -> bool | None:
         """Converte un valore generico in bool, opzionalmente accettando vuoti."""
         if value is None:
@@ -466,6 +601,8 @@ def load_employees(
         "max_month_min",
         "max_week_min",
         "weekly_rest_min_days",
+        "rest11h_max_monthly_exceptions",
+        "rest11h_max_consecutive_exceptions",
         "can_work_night",
         "max_nights_week",
         "max_nights_month",

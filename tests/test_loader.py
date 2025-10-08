@@ -131,6 +131,106 @@ def test_resolve_fulltime_baseline_requires_defined_role() -> None:
         resolve_fulltime_baseline(cfg, "OSS")
 
 
+def test_load_employees_rest11h_defaults_and_overrides(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        {
+            "rest11h": {
+                "max_monthly_exceptions": 2,
+                "max_consecutive_exceptions": 1,
+            }
+        },
+    )
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+            },
+            {
+                "employee_id": "E2",
+                "nome": "Marco",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "rest11h_max_monthly_exceptions": 5,
+                "rest11h_max_consecutive_exceptions": 3,
+            },
+            {
+                "employee_id": "E3",
+                "nome": "Luca",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "rest11h_max_monthly_exceptions": " ",
+                "rest11h_max_consecutive_exceptions": "",
+            },
+        ],
+    )
+
+    employees_df = load_employees(
+        str(employees_path),
+        cfg.get("defaults", {}),
+        cfg.get("roles", {}) or {},
+        weeks_in_horizon,
+        horizon_days,
+    )
+
+    lookup = employees_df.set_index("employee_id")
+
+    assert lookup.loc["E1", "rest11h_max_monthly_exceptions"] == 2
+    assert lookup.loc["E1", "rest11h_max_consecutive_exceptions"] == 1
+
+    assert lookup.loc["E2", "rest11h_max_monthly_exceptions"] == 5
+    assert lookup.loc["E2", "rest11h_max_consecutive_exceptions"] == 3
+
+    assert lookup.loc["E3", "rest11h_max_monthly_exceptions"] == 2
+    assert lookup.loc["E3", "rest11h_max_consecutive_exceptions"] == 1
+
+
+def test_load_employees_rest11h_invalid_value(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(tmp_path, {"rest11h": {"max_monthly_exceptions": 2}})
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "rest11h_max_monthly_exceptions": -1,
+            }
+        ],
+    )
+
+    with pytest.raises(
+        LoaderError,
+        match="Valore non valido per rest11h_max_monthly_exceptions per dipendente E1: -1",
+    ):
+        load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+
 def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
     calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
     employees_df = pd.DataFrame({"employee_id": ["E1"]})
