@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 
 import pandas as pd
@@ -452,3 +453,204 @@ def build_department_compatibility(
             ["ruolo", "reparto_home", "reparto_target"]
         ).reset_index(drop=True)
     return compat_df
+
+
+def resolve_fulltime_baseline(config: dict, role: str | None) -> float:
+    """Resolve baseline monthly full-time hours for the given role.
+
+    Args:
+        config: Configuration dictionary containing the ``payroll`` section.
+        role: Role identifier used to look up role-specific baselines. Can be ``None``.
+
+    Returns:
+        The baseline full-time monthly hours as a float.
+
+    Raises:
+        ValueError: If the payroll configuration is missing, malformed, or does not
+            provide a baseline for the requested role/default. Also raised when the
+            resolved baseline is not a positive number.
+    """
+
+    payroll_cfg = config.get("payroll")
+    if not isinstance(payroll_cfg, dict):
+        raise ValueError("config['payroll'] deve essere un dizionario valido")
+
+    raw_by_role = payroll_cfg.get("fulltime_hours_mensili_by_role")
+    if raw_by_role is None:
+        raw_by_role = {}
+    elif not isinstance(raw_by_role, dict):
+        raise ValueError(
+            "config['payroll']['fulltime_hours_mensili_by_role'] deve essere un dizionario"
+        )
+
+    role_key = role.strip() if isinstance(role, str) else None
+    if role_key:
+        candidate = raw_by_role.get(role_key)
+        candidate_source = f"payroll.fulltime_hours_mensili_by_role[{role_key}]"
+    else:
+        candidate = None
+        candidate_source = "payroll.fulltime_hours_mensili_default"
+
+    if candidate is None:
+        candidate = payroll_cfg.get("fulltime_hours_mensili_default")
+        candidate_source = "payroll.fulltime_hours_mensili_default"
+
+    if candidate is None:
+        if role_key:
+            raise ValueError(
+                "Baseline full-time mancante per ruolo "
+                f"'{role_key}' e nessun default in config['payroll']"
+            )
+        raise ValueError(
+            "config['payroll'] deve specificare 'fulltime_hours_mensili_default'"
+        )
+
+    try:
+        baseline = float(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Valore non numerico per {candidate_source}: {candidate!r}") from exc
+
+    if baseline <= 0:
+        raise ValueError(f"Il baseline full-time deve essere positivo ({baseline})")
+
+    return baseline
+
+
+def enrich_employees_with_fte(employees: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Return a copy of employees with FTE-related columns appended.
+
+    The function expects an ``employees`` DataFrame containing at least the columns
+    ``employee_id``, ``ore_dovute_mese_h`` and either ``role`` or ``ruolo``. It adds
+    the columns ``fte`` and ``fte_weight`` at the end of the DataFrame without
+    mutating the original input.
+
+    Args:
+        employees: Input DataFrame describing employees.
+        config: Configuration dictionary containing contract hours and payroll
+            information.
+
+    Returns:
+        A copy of ``employees`` with ``fte`` and ``fte_weight`` columns appended.
+
+    Raises:
+        ValueError: When required information is missing or invalid.
+    """
+
+    if "ore_dovute_mese_h" not in employees.columns:
+        raise ValueError("La colonna 'ore_dovute_mese_h' è richiesta")
+    if "employee_id" not in employees.columns:
+        raise ValueError("La colonna 'employee_id' è richiesta")
+
+    role_column = None
+    for candidate in ("role", "ruolo"):
+        if candidate in employees.columns:
+            role_column = candidate
+            break
+    if role_column is None:
+        raise ValueError("È necessaria la colonna 'role' o 'ruolo' nel DataFrame")
+
+    df = employees.copy(deep=True)
+
+    contract_by_role = config.get("contract_hours_by_role_h")
+    if contract_by_role is None:
+        contract_by_role = {}
+    elif not isinstance(contract_by_role, dict):
+        raise ValueError("config['contract_hours_by_role_h'] deve essere un dizionario")
+
+    ore_raw = df["ore_dovute_mese_h"]
+    ore_numeric = pd.to_numeric(ore_raw, errors="coerce")
+    non_empty_mask = (~ore_raw.isna()) & (ore_raw.astype(str).str.strip() != "")
+    invalid_mask = non_empty_mask & ore_numeric.isna()
+    if invalid_mask.any():
+        bad_ids = df.loc[invalid_mask, "employee_id"].tolist()
+        raise ValueError(
+            f"Valori non numerici in 'ore_dovute_mese_h' per employee_id: {bad_ids}"
+        )
+
+    fte_values: list[float] = []
+
+    for idx, row in df.iterrows():
+        role_value = row[role_column]
+        if pd.isna(role_value):
+            raise ValueError(
+                f"Ruolo mancante per employee_id {row['employee_id']}: impossibile calcolare FTE"
+            )
+        role_str = str(role_value).strip()
+        if not role_str:
+            raise ValueError(
+                f"Ruolo mancante per employee_id {row['employee_id']}: impossibile calcolare FTE"
+            )
+
+        due_hours = ore_numeric.loc[idx]
+        if pd.isna(due_hours):
+            if role_str not in contract_by_role:
+                raise ValueError(
+                    "ore_dovute_mese_h mancante per employee_id "
+                    f"{row['employee_id']} e nessun default in config['contract_hours_by_role_h']"
+                )
+            try:
+                due_hours = float(contract_by_role[role_str])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Valore non numerico in contract_hours_by_role_h per ruolo "
+                    f"'{role_str}'"
+                ) from exc
+        if pd.isna(due_hours):
+            raise ValueError(
+                "Valore non determinabile di 'ore_dovute_mese_h' per employee_id "
+                f"{row['employee_id']}"
+            )
+
+        if due_hours <= 0:
+            warnings.warn(
+                "ore_dovute_mese_h non positiva per employee_id "
+                f"{row['employee_id']}: {due_hours}",
+                stacklevel=2,
+            )
+
+        baseline = resolve_fulltime_baseline(config, role_str)
+        fte = due_hours / baseline
+        fte_values.append(fte)
+
+    fte_series = pd.Series(fte_values, index=df.index, dtype=float)
+    df["fte"] = fte_series
+    df["fte_weight"] = fte_series
+
+    return df
+
+
+def get_absence_hours(config: dict) -> float:
+    """Return configured absence hours, defaulting to six if unspecified.
+
+    Args:
+        config: Configuration dictionary containing the ``payroll`` section.
+
+    Returns:
+        Absence hours as a positive float value.
+
+    Raises:
+        ValueError: If the derived absence hours are missing, invalid or not
+            strictly positive.
+    """
+
+    payroll_cfg = config.get("payroll")
+    if payroll_cfg is None:
+        payroll_cfg = {}
+    if not isinstance(payroll_cfg, dict):
+        raise ValueError("config['payroll'] deve essere un dizionario valido")
+
+    raw_value = payroll_cfg.get("absence_hours_h")
+    if raw_value is None:
+        raw_value = 6
+
+    try:
+        absence_hours = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Valore non numerico per payroll.absence_hours_h"
+        ) from exc
+
+    if absence_hours <= 0:
+        raise ValueError("Le ore di assenza devono essere un numero positivo")
+
+    return absence_hours
