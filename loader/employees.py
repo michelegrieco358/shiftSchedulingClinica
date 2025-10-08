@@ -216,6 +216,16 @@ def load_employees(
         except ValueError:
             raise LoaderError(f"employees.csv: valore non numerico in '{field_name}': {x!r}")
 
+    absences_cfg = defaults.get("absences", {}) or {}
+    if not isinstance(absences_cfg, dict):  # pragma: no cover - validato in config
+        absences_cfg = {}
+    absence_role_hours = {
+        str(role).strip().casefold(): float(value)
+        for role, value in (absences_cfg.get("full_day_hours_by_role_h") or {}).items()
+        if str(role).strip()
+    }
+    absence_fallback = float(absences_cfg.get("fallback_contract_daily_avg_h", 0.0))
+
     contract_by_role = _contract_hours_by_role(defaults)
 
     dovuto_min = []
@@ -248,6 +258,64 @@ def load_employees(
         )
 
     contract_hours = df["dovuto_min"].astype(float) / 60.0
+
+    absence_override_col_present = "absence_full_day_hours_h" in df.columns
+    employee_idx = df.columns.get_loc("employee_id")
+    role_idx = df.columns.get_loc("role")
+    absence_idx = df.columns.get_loc("absence_full_day_hours_h") if absence_override_col_present else None
+    absence_overrides: list[float | None] = []
+    absence_effective: list[float] = []
+
+    for row in df.itertuples(index=False):
+        employee_id = str(row[employee_idx]).strip()
+        role_value = str(row[role_idx]).strip()
+        role_lookup = role_value.casefold()
+
+        override_value: float | None = None
+        if absence_override_col_present:
+            raw_value = str(row[absence_idx]).strip() if absence_idx is not None else ""
+            if raw_value:
+                try:
+                    override_value = float(raw_value)
+                except ValueError as exc:
+                    raise LoaderError(
+                        "Valore non valido per absence_full_day_hours_h per dipendente "
+                        f"{employee_id}: {row[absence_idx]}"
+                    ) from exc
+                if override_value != override_value or override_value < 0:
+                    raise LoaderError(
+                        "Valore non valido per absence_full_day_hours_h per dipendente "
+                        f"{employee_id}: {row[absence_idx]}"
+                    )
+                logger.info(
+                    "employees.csv: absence_full_day_hours_h override per dipendente %s: %s",
+                    employee_id,
+                    override_value,
+                )
+
+        if override_value is not None:
+            effective_hours = float(override_value)
+        else:
+            if role_lookup in absence_role_hours:
+                effective_hours = float(absence_role_hours[role_lookup])
+            else:
+                effective_hours = float(absence_fallback)
+                logger.warning(
+                    "employees.csv: absence_full_day_hours_h non definito per ruolo %s (dipendente %s): uso fallback %s",
+                    role_value or "<vuoto>",
+                    employee_id,
+                    effective_hours,
+                )
+
+        absence_overrides.append(override_value)
+        absence_effective.append(float(effective_hours))
+
+    if not absence_overrides:
+        absence_overrides = [None] * len(df)
+        absence_effective = [absence_fallback] * len(df)
+
+    df["absence_full_day_hours_h"] = absence_overrides
+    df["absence_full_day_hours_effective_h"] = absence_effective
 
     # Limite mensile massimo (hard constraint)
     month_cap_hours: list[float] = []
@@ -694,6 +762,8 @@ def load_employees(
         "employee_id",
         "nome",
         "role",
+        "absence_full_day_hours_h",
+        "absence_full_day_hours_effective_h",
         "reparto_id",
         "ore_dovute_mese_h",
         "dovuto_min",
