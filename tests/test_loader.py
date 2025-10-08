@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 import sys
@@ -843,16 +845,38 @@ def test_expand_requirements_propagates_overstaff_cap(tmp_path: Path) -> None:
     assert roles_total.loc[0, "gruppo"] == "G1"
 
 
-def test_get_absence_hours_from_config_and_load_all_smoke() -> None:
-    cfg = load_config(str(DATA_DIR / "config.yaml"))
+def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> None:
+    cfg = load_config(str(DATA_DIR / 'config.yaml'))
     assert get_absence_hours_from_config(cfg) == pytest.approx(6.0)
 
-    loaded = load_all(str(DATA_DIR / "config.yaml"), str(DATA_DIR))
+    cfg_path = tmp_path / 'config.yaml'
+    cfg_path.write_text((DATA_DIR / 'config.yaml').read_text(encoding='utf-8'), encoding='utf-8')
+
+    data_dir = tmp_path / 'data'
+    data_dir.mkdir()
+
+    for src in DATA_DIR.glob('*.csv'):
+        shutil.copy(src, data_dir / src.name)
+
+    pd.DataFrame(columns=['employee_id', 'slot_id', 'lock']).to_csv(
+        data_dir / 'preassignments.csv', index=False
+    )
+    pd.DataFrame(
+        columns=['date', 'reparto_id', 'shift_code', 'employee_id', 'lock_type']
+    ).to_csv(data_dir / 'locks.csv', index=False)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r'preassignments: caricati .*',
+            category=UserWarning,
+        )
+        loaded = load_all(str(cfg_path), str(data_dir))
     assert not loaded.employees_df.empty
     assert {
-        "cross_max_shifts_week",
-        "cross_max_shifts_month",
-        "cross_penalty_weight",
+        'cross_max_shifts_week',
+        'cross_max_shifts_month',
+        'cross_penalty_weight',
     }.issubset(loaded.employees_df.columns)
     assert not loaded.leaves_df.empty
     assert not loaded.availability_df.empty
