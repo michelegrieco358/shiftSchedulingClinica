@@ -149,6 +149,37 @@ def test_load_leaves_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Pa
     row = shift_out.loc[mask_cross].iloc[0]
     assert not bool(row["is_in_horizon"])
     assert row["shift_end_dt"] == pd.Timestamp("2024-04-01 06:00:00")
+
+
+def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
+    calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
+    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    shifts_df = pd.DataFrame(
+        {
+            "shift_id": ["M"],
+            "duration_min": [480],
+            "crosses_midnight": [0],
+            "start_time": [pd.to_timedelta(8, unit="h")],
+            "end_time": [pd.to_timedelta(16, unit="h")],
+        }
+    )
+
+    leaves_path = tmp_path / "leaves.csv"
+    leaves_path.write_text(
+        "employee_id,date_from,date_to,type\n"
+        "E1,2024-04-01,2024-04-01,FERIE\n"
+    )
+
+    _, day_out = load_leaves(
+        str(leaves_path),
+        employees_df,
+        shifts_df,
+        calendar_df,
+        absence_hours_h=7.5,
+    )
+
+    assert not day_out.empty
+    assert day_out.loc[0, "absence_hours_h"] == pytest.approx(7.5)
 def test_enrich_employees_with_fte_uses_payroll_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)

@@ -87,6 +87,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     end_date = _parse_date(cfg["horizon"]["end_date"])
 
     defaults = cfg.get("defaults", {})
+    absence_hours_h = get_absence_hours_from_config(cfg)
 
     holidays_df = load_holidays(os.path.join(data_dir, "holidays.csv"))
 
@@ -182,6 +183,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         employees_df,
         shifts_df,
         calendar_df,
+        absence_hours_h=absence_hours_h,
     )
     availability_df = load_availability(
         os.path.join(data_dir, "availability.csv"),
