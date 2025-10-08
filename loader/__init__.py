@@ -210,7 +210,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
             )
 
     preassignments_raw_df = load_preassignments(
-        os.path.join(data_dir, "preassignments.csv")
+        os.path.join(data_dir, "preassignments.csv"),
+        shift_slots=shift_slots_df,
+        locks_path=os.path.join(data_dir, "locks.csv"),
     )
     preassign_cfg = cfg.get("preassignments", {})
     if not isinstance(preassign_cfg, dict):
