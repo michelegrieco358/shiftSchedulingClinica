@@ -11,7 +11,8 @@ def build_calendar(
 ) -> pd.DataFrame:
     prev_week_start = start_date - timedelta(days=(start_date.isoweekday() - 1))
     six_days_before = start_date - timedelta(days=6)
-    cal_start = min(prev_week_start, six_days_before)
+    cal_start_base = min(prev_week_start, six_days_before)
+    cal_start = cal_start_base - timedelta(days=4)
     rows = []
     d = cal_start
     while d <= end_date:

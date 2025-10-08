@@ -128,6 +128,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
     shift_slots_df = build_shift_slots(
         month_plan_df, shifts_df, dept_shift_map_df, defaults
     )
+    shift_slots_df = attach_calendar(shift_slots_df, calendar_df)
 
     groups_total_expanded, groups_role_min_expanded = expand_requirements(
         month_plan_df, groups_df, roles_df
