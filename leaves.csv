@@ -1,3 +1,3 @@
-employee_id,start_date,end_date,tipo
+employee_id,date_from,date_to,type
 E001,2025-11-10,2025-11-12,ferie
 E002,2025-11-18,2025-11-18,congedo

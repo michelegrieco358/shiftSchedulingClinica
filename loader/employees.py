@@ -346,6 +346,7 @@ def load_employees(
         "ruolo",
         "role",
         "reparto_id",
+        "ore_dovute_mese_h",
         "dovuto_min",
         "saldo_init_min",
         "max_month_min",
@@ -360,6 +361,15 @@ def load_employees(
     if "reparto_label" in df.columns:
         df["reparto_label"] = df["reparto_label"].astype(str).str.strip()
         ordered_cols.insert(ordered_cols.index("reparto_id") + 1, "reparto_label")
+
+    optional_tail_cols = [
+        "cross_max_shifts_week",
+        "cross_max_shifts_month",
+        "cross_penalty_weight",
+    ]
+    for col in optional_tail_cols:
+        if col in df.columns and col not in ordered_cols:
+            ordered_cols.append(col)
 
     return df[ordered_cols]
 

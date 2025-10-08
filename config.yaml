@@ -30,3 +30,14 @@ roles:
     can_work_night: false
 shift_types:
   night_codes: ["N"]
+payroll:
+  absence_hours_h: 6
+  fulltime_hours_mensili_default: 165
+  fulltime_hours_mensili_by_role:
+    caposala: 150
+cross:
+  max_shifts_week: 2
+  max_shifts_month: 6
+  penalty_weight: 1.5
+preassignments:
+  allow_cross_reparto: true
