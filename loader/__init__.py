@@ -13,7 +13,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - messaggio esplicativo
     ) from exc
 
 from .absences import (
-    build_absence_masks,
     explode_absences_by_day,
     get_absence_hours_from_config,
     load_absences,
@@ -40,7 +39,7 @@ from .employees import (
     load_employees,
     load_role_dept_pools,
 )
-from .gap_pairs import build_gap_pairs, build_gap_pairs_pool
+from .gap_pairs import build_gap_pairs
 from .history import load_history
 from .leaves import load_leaves
 from .preassignments import (
@@ -269,7 +268,6 @@ __all__ = [
     "LoadedData",
     "load_all",
     "attach_calendar",
-    "build_absence_masks",
     "build_calendar",
     "explode_absences_by_day",
     "get_absence_hours_from_config",
