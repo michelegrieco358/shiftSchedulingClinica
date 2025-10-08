@@ -11,6 +11,12 @@ def main() -> None:
     ap.add_argument(
         "--export-csv", action="store_true", help="Esporta i DF espansi come CSV di debug"
     )
+    ap.add_argument(
+        "--export-dir",
+        type=str,
+        default=None,
+        help="Cartella di destinazione per i CSV di debug (default: <data-dir>/_expanded)",
+    )
     args = ap.parse_args()
 
     try:
@@ -43,7 +49,13 @@ def main() -> None:
         print(f"- holidays caricati: {len(data.holidays_df)}")
 
     if args.export_csv:
-        outdir = os.path.join(args.data_dir, "_expanded")
+        default_outdir = os.path.join(args.data_dir, "_expanded")
+        if args.export_dir is None:
+            outdir = default_outdir
+        else:
+            outdir = args.export_dir
+            if not os.path.isabs(outdir):
+                outdir = os.path.join(args.data_dir, outdir)
         os.makedirs(outdir, exist_ok=True)
         data.calendar_df.to_csv(os.path.join(outdir, "calendar.csv"), index=False)
         data.month_plan_df.to_csv(os.path.join(outdir, "month_plan_with_calendar.csv"), index=False)
