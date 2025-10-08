@@ -19,6 +19,12 @@ from .absences import (
 )
 from .availability import load_availability
 from .calendar import attach_calendar, build_calendar, enrich_shift_slots_calendar
+from .candidate_assignments import build_candidate_assignments
+from .cross import (
+    cross_reporting,
+    enrich_employees_with_cross_policy,
+    validate_candidates_cross,
+)
 from .config import load_config, load_holidays
 from .coverage import (
     build_slot_requirements,
@@ -33,7 +39,8 @@ from .employees import (
     load_employees,
     load_role_dept_pools,
 )
-from .gap_pairs import build_gap_pairs
+from .pools import derive_allowed_reparti, load_pools
+from .gap_pairs import build_gap_pairs, build_gap_pairs_pool
 from .history import load_history
 from .leaves import load_leaves
 from .preassignments import (
