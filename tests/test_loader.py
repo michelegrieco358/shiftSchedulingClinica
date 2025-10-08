@@ -231,6 +231,131 @@ def test_load_employees_rest11h_invalid_value(tmp_path: Path) -> None:
         )
 
 
+def test_load_employees_balance_delta_defaults_and_overrides(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        {"balance": {"max_balance_delta_month_h": 12}},
+    )
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+            },
+            {
+                "employee_id": "E2",
+                "nome": "Marco",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "max_balance_delta_month_h": 8,
+            },
+            {
+                "employee_id": "E3",
+                "nome": "Luca",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "max_balance_delta_month_h": "  ",
+            },
+        ],
+    )
+
+    employees_df = load_employees(
+        str(employees_path),
+        cfg.get("defaults", {}),
+        cfg.get("roles", {}) or {},
+        weeks_in_horizon,
+        horizon_days,
+    )
+
+    lookup = employees_df.set_index("employee_id")
+    assert lookup.loc["E1", "max_balance_delta_month_h"] == 12
+    assert lookup.loc["E2", "max_balance_delta_month_h"] == 8
+    assert lookup.loc["E3", "max_balance_delta_month_h"] == 12
+
+
+def test_load_employees_balance_delta_invalid_employee_value(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        {"balance": {"max_balance_delta_month_h": 5}},
+    )
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "max_balance_delta_month_h": -1,
+            }
+        ],
+    )
+
+    with pytest.raises(
+        LoaderError,
+        match="Valore non valido per max_balance_delta_month_h per dipendente E1: -1",
+    ):
+        load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+
+def test_load_employees_balance_delta_invalid_default(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        {"balance": {"max_balance_delta_month_h": -3}},
+    )
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+            }
+        ],
+    )
+
+    with pytest.raises(
+        LoaderError,
+        match="config: defaults.balance.max_balance_delta_month_h deve essere un intero ≥ 0",
+    ):
+        load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+
 def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
     calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
     employees_df = pd.DataFrame({"employee_id": ["E1"]})

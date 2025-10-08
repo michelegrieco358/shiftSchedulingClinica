@@ -150,6 +150,47 @@ def load_employees(
             f"(trovato: {global_weekly_rest_min_days!r})"
         )
 
+    def _parse_nonneg_int_config(value: Any, label: str, *, default: int = 0) -> int:
+        """Converte un valore generico in intero ≥ 0 per configurazioni."""
+
+        if value in (None, ""):
+            return int(default)
+        if isinstance(value, bool):
+            raise LoaderError(f"{label} deve essere un intero ≥ 0 (trovato: {value!r})")
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, float):
+            if abs(value - round(value)) > 1e-9:
+                raise LoaderError(
+                    f"{label} deve essere un intero ≥ 0 (trovato: {value!r})"
+                )
+            parsed = int(round(value))
+        elif isinstance(value, str):
+            s = value.strip()
+            if s == "":
+                return int(default)
+            try:
+                parsed = int(s)
+            except ValueError as exc:
+                raise LoaderError(
+                    f"{label} deve essere un intero ≥ 0 (trovato: {value!r})"
+                ) from exc
+        else:
+            raise LoaderError(f"{label} deve essere un intero ≥ 0 (trovato: {value!r})")
+        if parsed < 0:
+            raise LoaderError(f"{label} deve essere un intero ≥ 0 (trovato: {value!r})")
+        return parsed
+
+    balance_defaults_cfg = defaults.get("balance", {}) or {}
+    if balance_defaults_cfg and not isinstance(balance_defaults_cfg, dict):
+        raise LoaderError("config: defaults.balance deve essere un dizionario")
+
+    global_max_balance_delta = _parse_nonneg_int_config(
+        balance_defaults_cfg.get("max_balance_delta_month_h", 0),
+        "config: defaults.balance.max_balance_delta_month_h",
+        default=0,
+    )
+
     def parse_hours_nonneg(x, field_name: str) -> float:
         """Converte valore in ore float non negativo con validazione."""
         s = str(x).strip()
@@ -253,6 +294,65 @@ def load_employees(
             )
         week_cap_hours.append(week_hours)
     df["max_week_min"] = [to_min_from_hours(v) for v in week_cap_hours]
+
+    balance_col_present = "max_balance_delta_month_h" in df.columns
+    balance_deltas: list[int] = []
+
+    for _, row in df.iterrows():
+        employee_id = str(row["employee_id"]).strip()
+        value = global_max_balance_delta
+        if balance_col_present:
+            original_value = row["max_balance_delta_month_h"]
+            raw_value = str(original_value).strip()
+            if raw_value == "":
+                logger.warning(
+                    "employees.csv: max_balance_delta_month_h vuoto per dipendente %s: uso default %s",
+                    employee_id,
+                    global_max_balance_delta,
+                )
+                logger.info(
+                    "employees.csv: max_balance_delta_month_h default applicato per dipendente %s: %s",
+                    employee_id,
+                    global_max_balance_delta,
+                )
+            else:
+                try:
+                    parsed = int(raw_value)
+                except ValueError as exc:
+                    logger.warning(
+                        "employees.csv: max_balance_delta_month_h non numerico per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per max_balance_delta_month_h per dipendente "
+                        f"{employee_id}: {original_value}"
+                    ) from exc
+                if parsed < 0:
+                    logger.warning(
+                        "employees.csv: max_balance_delta_month_h negativo per dipendente %s: %r",
+                        employee_id,
+                        original_value,
+                    )
+                    raise LoaderError(
+                        "Valore non valido per max_balance_delta_month_h per dipendente "
+                        f"{employee_id}: {original_value}"
+                    )
+                value = parsed
+                logger.info(
+                    "employees.csv: max_balance_delta_month_h override per dipendente %s: %s",
+                    employee_id,
+                    value,
+                )
+        balance_deltas.append(int(value))
+
+    if not balance_col_present and balance_deltas:
+        logger.info(
+            "employees.csv: max_balance_delta_month_h default globale applicato a tutti i dipendenti: %s",
+            global_max_balance_delta,
+        )
+
+    df["max_balance_delta_month_h"] = balance_deltas
 
     weekly_rest_values: list[int] = []
     weekly_rest_col_present = "weekly_rest_min_days" in df.columns
@@ -598,6 +698,7 @@ def load_employees(
         "ore_dovute_mese_h",
         "dovuto_min",
         "saldo_init_min",
+        "max_balance_delta_month_h",
         "max_month_min",
         "max_week_min",
         "weekly_rest_min_days",
