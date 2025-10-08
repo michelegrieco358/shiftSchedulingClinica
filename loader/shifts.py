@@ -427,8 +427,8 @@ def load_shift_role_eligibility(
     df = pd.read_csv(path, dtype=str).fillna("")
     _ensure_cols(df, {"shift_id", "ruolo"}, "shift_role_eligibility.csv")
 
-    df["shift_id"] = df["shift_id"].astype(str).str.strip()
-    df["ruolo"] = df["ruolo"].astype(str).str.strip()
+    df["shift_id"] = df["shift_id"].astype(str).str.strip().str.upper()
+    df["ruolo"] = df["ruolo"].astype(str).str.strip().str.upper()
 
     if (df["shift_id"] == "").any():
         bad = df.loc[df["shift_id"] == "", :].index.tolist()[:5]
@@ -442,8 +442,10 @@ def load_shift_role_eligibility(
         )
 
     # Usa config come fonte di verità per i ruoli ammessi
-    allowed_roles = _resolve_allowed_roles(defaults, fallback_roles=employees_df["ruolo"].unique())
-    known_roles = set(allowed_roles)
+    allowed_roles = _resolve_allowed_roles(
+        defaults, fallback_roles=employees_df["ruolo"].unique()
+    )
+    known_roles = {str(role).strip().upper() for role in allowed_roles}
     bad_roles = sorted(set(df["ruolo"].unique()) - known_roles)
     if bad_roles:
         raise LoaderError(
@@ -451,7 +453,7 @@ def load_shift_role_eligibility(
             f"{bad_roles}"
         )
 
-    known_shifts = set(shifts_df["shift_id"].unique())
+    known_shifts = {str(shift).strip().upper() for shift in shifts_df["shift_id"].unique()}
     bad_shifts = sorted(set(df["shift_id"].unique()) - known_shifts)
     if bad_shifts:
         raise LoaderError(
