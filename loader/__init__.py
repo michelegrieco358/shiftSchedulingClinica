@@ -159,7 +159,6 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
             value
             for value in (
                 rest_rules.get("post_night_rest_h"),
-                rest_rules.get("weekly_rest_min_h"),
                 rest_rules.get("min_between_shifts_h"),
             )
             if isinstance(value, (int, float)) and value > 0

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+import re
 from datetime import date, datetime
 from pathlib import Path
 import sys
 
-import pytest
 import pandas as pd
+import pytest
+import yaml
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 
@@ -37,6 +40,37 @@ def _calendar_info(cfg: dict[str, object]) -> tuple[int, int]:
         calendar_df["is_in_horizon"], "week_id"
     ].nunique()
     return horizon_days, weeks_in_horizon
+
+
+def _write_basic_config(
+    tmp_path: Path, defaults_extra: dict[str, object] | None = None
+) -> Path:
+    cfg_dict: dict[str, object] = {
+        "horizon": {"start_date": "2025-01-01", "end_date": "2025-01-31"},
+        "defaults": {
+            "allowed_roles": ["infermiere"],
+            "departments": ["dep"],
+            "contract_hours_by_role_h": {"infermiere": 160},
+            "night": {
+                "can_work_night": True,
+                "max_per_week": 2,
+                "max_per_month": 8,
+            },
+        },
+    }
+    if defaults_extra:
+        cfg_dict["defaults"].update(defaults_extra)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg_dict, sort_keys=False))
+    return cfg_path
+
+
+def _write_employees_csv(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
+    df = pd.DataFrame(rows)
+    employees_path = tmp_path / "employees.csv"
+    df.to_csv(employees_path, index=False)
+    return employees_path
 
 
 def test_load_employees_and_cross_policy_overrides() -> None:
@@ -202,6 +236,121 @@ def test_enrich_employees_with_fte_uses_defaults() -> None:
     assert lookup.loc["E001", "fte"] == pytest.approx(1.0)
     assert lookup.loc["E002", "fte"] == pytest.approx(1.0)
     assert lookup.loc["E003", "fte"] == pytest.approx(1.0)
+
+
+def test_load_employees_weekly_rest_uses_default(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    cfg_path = _write_basic_config(tmp_path)
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E001",
+                "nome": "Mario Rossi",
+                "reparto_id": "dep",
+                "role": "infermiere",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+            }
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger="loader.employees"):
+        out = load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+    assert out.loc[0, "weekly_rest_min_days"] == 1
+    assert any(
+        "weekly_rest_min_days default applicato" in message
+        for message in caplog.messages
+    )
+
+
+def test_load_employees_weekly_rest_override(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    cfg_path = _write_basic_config(tmp_path, defaults_extra={"weekly_rest_min_days": 2})
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E002",
+                "nome": "Luigi Verdi",
+                "reparto_id": "dep",
+                "role": "infermiere",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "weekly_rest_min_days": 5,
+            }
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger="loader.employees"):
+        out = load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+    assert out.loc[0, "weekly_rest_min_days"] == 5
+    assert any(
+        "weekly_rest_min_days override" in message for message in caplog.messages
+    )
+
+
+@pytest.mark.parametrize("invalid_value", ["-1", "abc"])
+def test_load_employees_weekly_rest_invalid_values(invalid_value: str, tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(tmp_path)
+    cfg = load_config(str(cfg_path))
+    horizon_days, weeks_in_horizon = _calendar_info(cfg)
+
+    employees_path = _write_employees_csv(
+        tmp_path,
+        [
+            {
+                "employee_id": "E003",
+                "nome": "Anna Bianchi",
+                "reparto_id": "dep",
+                "role": "infermiere",
+                "ore_dovute_mese_h": 160,
+                "saldo_prog_iniziale_h": 0,
+                "weekly_rest_min_days": invalid_value,
+            }
+        ],
+    )
+
+    match = re.escape(
+        f"Valore non valido per weekly_rest_min_days per dipendente E003: {invalid_value}"
+    )
+    with pytest.raises(LoaderError, match=match):
+        load_employees(
+            str(employees_path),
+            cfg.get("defaults", {}),
+            cfg.get("roles", {}) or {},
+            weeks_in_horizon,
+            horizon_days,
+        )
+
+
+def test_load_config_warns_on_weekly_rest_hours(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(tmp_path, defaults_extra={"weekly_rest_min_h": 48})
+
+    with pytest.warns(UserWarning, match="defaults.weekly_rest_min_h è deprecato"):
+        cfg = load_config(str(cfg_path))
+
+    defaults = cfg.get("defaults", {})
+    assert "weekly_rest_min_h" not in defaults
+    assert defaults["weekly_rest_min_days"] == 1
 
 
 def test_shift_role_eligibility_with_allowed_column() -> None:

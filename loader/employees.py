@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from typing import Any
@@ -12,6 +13,9 @@ from .utils import (
     _resolve_allowed_departments,
     _resolve_allowed_roles,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _contract_hours_by_role(defaults_cfg: dict[str, Any] | None) -> dict[str, Any]:
@@ -132,6 +136,20 @@ def load_employees(
             f"{bad_departments}"
         )
 
+    global_weekly_rest_min_days = defaults.get("weekly_rest_min_days", 1)
+    if isinstance(global_weekly_rest_min_days, bool) or not isinstance(
+        global_weekly_rest_min_days, int
+    ):
+        raise LoaderError(
+            "config: defaults.weekly_rest_min_days deve essere un intero ≥ 0 "
+            f"(trovato: {global_weekly_rest_min_days!r})"
+        )
+    if global_weekly_rest_min_days < 0:
+        raise LoaderError(
+            "config: defaults.weekly_rest_min_days deve essere un intero ≥ 0 "
+            f"(trovato: {global_weekly_rest_min_days!r})"
+        )
+
     def parse_hours_nonneg(x, field_name: str) -> float:
         """Converte valore in ore float non negativo con validazione."""
         s = str(x).strip()
@@ -235,6 +253,48 @@ def load_employees(
             )
         week_cap_hours.append(week_hours)
     df["max_week_min"] = [to_min_from_hours(v) for v in week_cap_hours]
+
+    weekly_rest_values: list[int] = []
+    weekly_rest_col_present = "weekly_rest_min_days" in df.columns
+
+    for _, row in df.iterrows():
+        employee_id = str(row["employee_id"]).strip()
+        original_value = row["weekly_rest_min_days"] if weekly_rest_col_present else ""
+        raw_value = str(original_value).strip() if weekly_rest_col_present else ""
+
+        if raw_value == "":
+            weekly_rest_values.append(global_weekly_rest_min_days)
+            logger.info(
+                "employees.csv: weekly_rest_min_days default applicato per dipendente %s: %s",
+                employee_id,
+                global_weekly_rest_min_days,
+            )
+            continue
+
+        try:
+            parsed = int(raw_value)
+        except ValueError as exc:
+            raise LoaderError(
+                "Valore non valido per weekly_rest_min_days per dipendente "
+                f"{employee_id}: {original_value}"
+            ) from exc
+
+        if parsed < 0:
+            raise LoaderError(
+                "Valore non valido per weekly_rest_min_days per dipendente "
+                f"{employee_id}: {original_value}"
+            )
+
+        weekly_rest_values.append(parsed)
+        logger.info(
+            "employees.csv: weekly_rest_min_days override per dipendente %s: %s",
+            employee_id,
+            parsed,
+        )
+
+    if len(weekly_rest_values) != len(df):
+        weekly_rest_values = [global_weekly_rest_min_days] * len(df)
+    df["weekly_rest_min_days"] = weekly_rest_values
 
     def _coerce_bool(value: Any, label: str, allow_empty: bool = False) -> bool | None:
         """Converte un valore generico in bool, opzionalmente accettando vuoti."""
@@ -405,6 +465,7 @@ def load_employees(
         "saldo_init_min",
         "max_month_min",
         "max_week_min",
+        "weekly_rest_min_days",
         "can_work_night",
         "max_nights_week",
         "max_nights_month",
