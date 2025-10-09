@@ -1,3 +1,3 @@
-date,reparto_id,shift_code,employee_id,lock_type
+date,reparto_id,shift_id,employee_id,lock_type
 2025-10-01,ER01,MAT,EMP001,MUST_DO
 2025-10-02,ER01,POM,EMP002,FORBIDDEN

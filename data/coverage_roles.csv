@@ -1,4 +1,4 @@
-coverage_code,shift_code,reparto_id,gruppo,ruolo,min_ruolo
+coverage_code,shift_id,reparto_id,gruppo,ruolo,min_ruolo
 S,M,degenza,000-Tetto,infermiere,1
 S,M,degenza,000-Tetto,oss,1
 S,M,degenza,001-Caposala,caposala,1

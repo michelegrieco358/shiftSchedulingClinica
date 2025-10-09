@@ -1,4 +1,4 @@
-data,reparto_id,shift_code,coverage_code
+date,reparto_id,shift_id,coverage_code
 2025-11-01,ortopedia,M,S
 2025-11-01,ortopedia,P,S
 2025-11-01,degenza,M,S
