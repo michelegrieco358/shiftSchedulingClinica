@@ -134,18 +134,15 @@ def test_load_employees_and_cross_policy_overrides() -> None:
     enriched = enrich_employees_with_cross_policy(employees_df, cfg)
     lookup = enriched.set_index("employee_id")
 
-    assert lookup.loc["E001", "cross_max_shifts_week"] == 1
     assert lookup.loc["E001", "cross_max_shifts_month"] == 3
     cross_cfg = cfg["cross"]
     assert lookup.loc["E001", "cross_penalty_weight"] == pytest.approx(
         cross_cfg["penalty_weight"]
     )
-    assert lookup.loc["E002", "cross_max_shifts_week"] == cross_cfg["max_shifts_week"]
     assert lookup.loc["E002", "cross_max_shifts_month"] == cross_cfg["max_shifts_month"]
     assert lookup.loc["E002", "cross_penalty_weight"] == pytest.approx(
         cross_cfg["penalty_weight"]
     )
-    assert lookup.loc["E003", "cross_max_shifts_week"] == 0
     assert lookup.loc["E003", "cross_max_shifts_month"] == 0
     assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(
         cross_cfg["penalty_weight"]
@@ -877,7 +874,6 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
         loaded = load_all(str(cfg_path), str(data_dir))
     assert not loaded.employees_df.empty
     assert {
-        'cross_max_shifts_week',
         'cross_max_shifts_month',
         'cross_penalty_weight',
     }.issubset(loaded.employees_df.columns)

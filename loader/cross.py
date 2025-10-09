@@ -56,9 +56,6 @@ def enrich_employees_with_cross_policy(
         )
 
     defaults = {
-        "cross_max_shifts_week": _ensure_non_negative_default(
-            config, "max_shifts_week", is_float=False
-        ),
         "cross_max_shifts_month": _ensure_non_negative_default(
             config, "max_shifts_month", is_float=False
         ),
@@ -104,6 +101,11 @@ def enrich_employees_with_cross_policy(
             enriched[column] = filled.astype(float)
         else:
             enriched[column] = filled.astype(int)
+
+    if "cross_penalty_weight" not in enriched.columns:
+        enriched["cross_penalty_weight"] = defaults["cross_penalty_weight"]
+    if "cross_max_shifts_month" not in enriched.columns:
+        enriched["cross_max_shifts_month"] = defaults["cross_max_shifts_month"]
 
     return enriched
 

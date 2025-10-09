@@ -786,7 +786,6 @@ def load_employees(
         ordered_cols.insert(ordered_cols.index("reparto_id") + 1, "reparto_label")
 
     optional_tail_cols = [
-        "cross_max_shifts_week",
         "cross_max_shifts_month",
     ]
     for col in optional_tail_cols:

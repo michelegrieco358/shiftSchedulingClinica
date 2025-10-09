@@ -95,7 +95,7 @@ def build_all(dfs: dict, cfg: dict) -> dict:
 
     role_column = "role" if "role" in df_employees.columns else "ruolo"
     if role_column not in df_employees.columns:
-        raise ValueError("prep_indices: colonna ruolo mancante in df_employees")
+        raise ValueError("preprocessing: colonna ruolo mancante in df_employees")
 
     slot_base = df_slots.loc[:, ["slot_id", "slot_id2", "reparto_id", "shift_code", "date", "is_night"]].copy()
     slot_base = slot_base.rename(columns={"reparto_id": "slot_reparto_id"})

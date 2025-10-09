@@ -329,10 +329,6 @@ def _check_employees(
         if emp_month is None:
             emp_month = role_month
 
-        # Le variabili finali (emp_can, emp_week, emp_month) vengono
-        # calcolate per intercettare valori non validi. Nessun controllo
-        # aggiuntivo richiesto oltre alla validazione effettuata.
-
         for ytd_col in ("saturday_count_ytd", "sunday_count_ytd", "holiday_count_ytd"):
             val = row.get(ytd_col, "0") or "0"
             _parse_int(val, f"{path.name}: {ytd_col}")
