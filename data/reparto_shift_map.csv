@@ -1,4 +1,4 @@
-reparto_id,shift_code,enabled,start_override,end_override
-ortopedia,P,true,,
-ortopedia,N,false,,
-degenza,M,true,06:30,
+reparto_id,shift_id,enabled,start_override,end_override
+ortopedia,P,1,,
+ortopedia,N,0,,
+degenza,M,1,06:30,
