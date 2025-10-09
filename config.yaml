@@ -1,4 +1,3 @@
-max_balance_delta_month_h: 0
 cross_max_shifts_month: 6
 
 horizon:
@@ -9,7 +8,13 @@ rest_rules:
   min_between_shifts_h: 11
   post_night_rest_h: 48
 
+coverage:
+  allow_overstaff: true
+  overstaff_cap_default: 0
+
 defaults:
+  balance:
+    max_balance_delta_month_h : 10
   allowed_roles: ["infermiere", "oss", "caposala"]
   departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
   weekly_rest_min_days: 1
@@ -52,3 +57,4 @@ cross:
   penalty_weight: 1.5
 preassignments:
   allow_cross_reparto: true
+
