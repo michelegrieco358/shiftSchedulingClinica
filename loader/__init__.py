@@ -122,6 +122,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         weeks_in_horizon,
         horizon_days,
     )
+    employees_df = enrich_employees_with_cross_policy(employees_df, cfg)
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
     dept_shift_map_df = load_department_shift_map(
         os.path.join(data_dir, "reparto_shift_map.csv"), defaults, shifts_df

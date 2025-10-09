@@ -1,5 +1,47 @@
 from __future__ import annotations
+
 import pandas as pd
+
+
+def _normalize_roles(series: pd.Series) -> pd.Series:
+    cleaned = (
+        series.dropna()
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    return cleaned[(cleaned != "") & (cleaned != "NAN")]
+
+
+def _build_absence_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if df is None or df.empty:
+        return None
+    if "employee_id" not in df.columns:
+        return None
+
+    work = df.copy()
+    date_col = next((col for col in ("slot_date", "date", "data") if col in work.columns), None)
+    if date_col is None:
+        return None
+
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work["slot_date"] = pd.to_datetime(work[date_col]).dt.date
+
+    mask = pd.Series(True, index=work.index)
+    if "kind" in work.columns:
+        kind_series = work["kind"].astype(str).str.strip().str.lower()
+        mask &= kind_series.isin({"full_day", "full-day", "full"})
+    elif "tipo" in work.columns:
+        tipo_series = work["tipo"].astype(str).str.strip().str.lower()
+        mask &= tipo_series.isin({"full_day", "full-day"})
+    elif "is_absent" in work.columns:
+        abs_series = work["is_absent"].astype(str).str.strip().str.lower()
+        mask &= abs_series.isin({"1", "true", "t", "yes", "y", "si"})
+
+    filtered = work.loc[mask, ["employee_id", "slot_date"]].drop_duplicates()
+    if filtered.empty:
+        return None
+    return filtered.reset_index(drop=True)
 
 def build_all(dfs: dict, cfg: dict) -> dict:
     """Crea dizionari e strutture dati derivate dai DataFrame principali."""
@@ -11,7 +53,11 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_elig = dfs.get("shift_role_eligibility")
     df_pools = dfs.get("role_dept_pools")
     df_pre = dfs.get("preassignments")
-    df_abs = dfs.get("absences")
+    df_abs = (
+        dfs.get("absences")
+        or dfs.get("leaves_days_df")
+        or dfs.get("leaves_df")
+    )
     df_availability = dfs.get("availability_df") or dfs.get("availability")
 
     if df_employees is None or df_slots is None:
@@ -117,14 +163,7 @@ def build_all(dfs: dict, cfg: dict) -> dict:
         )
         slot_role = slot_base.merge(allowed_roles, on="shift_code", how="inner")
     else:
-        roles = (
-            df_employees[role_column]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .dropna()
-        )
-        roles = roles[roles != ""]
+        roles = _normalize_roles(df_employees[role_column])
         slot_role = slot_base.assign(key=1).merge(
             pd.DataFrame({"role": roles.unique(), "key": 1}),
             on="key",
@@ -187,13 +226,8 @@ def build_all(dfs: dict, cfg: dict) -> dict:
         )
         candidates = candidates[candidates["_forbid"] != "both"].drop(columns="_forbid")
 
-    if df_abs is not None and not df_abs.empty:
-        absence_tbl = df_abs.loc[
-            df_abs["kind"].fillna("full_day").str.lower() == "full_day",
-            ["employee_id", "date"],
-        ].copy()
-        absence_tbl["slot_date"] = pd.to_datetime(absence_tbl["date"]).dt.date
-        absence_tbl = absence_tbl.drop(columns="date").drop_duplicates()
+    absence_tbl = _build_absence_index(df_abs)
+    if absence_tbl is not None and not absence_tbl.empty:
         candidates = candidates.merge(
             absence_tbl,
             on=["employee_id", "slot_date"],
@@ -220,7 +254,11 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             how="left",
             indicator="_availability",
         )
-        candidates = candidates[candidates["_availability"] != "both"].drop(
+        candidates = candidates[candidates["_availability"] != "both"]
+        drop_cols = [col for col in ("_availability", "turno") if col in candidates.columns]
+        if drop_cols:
+            candidates = candidates.drop(columns=drop_cols)
+
     if "is_night" in candidates.columns:
         night_mask = candidates["is_night"].fillna(False)
         if "can_work_night" in candidates.columns:
@@ -228,8 +266,6 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             candidates = candidates[~(night_mask & ~can_night)]
         else:
             candidates = candidates[~night_mask]
-            columns=["_availability", "turno"]
-        )
 
     eligible_sids = {eid_of[eid]: [] for eid in df_employees["employee_id"].unique()}
     eligible_eids = {sid_of[sid]: [] for sid in df_slots["slot_id"].unique()}
