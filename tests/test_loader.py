@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 DATA_DIR = Path(__file__).resolve().parents[1]
+DATA_CSV_DIR = DATA_DIR / 'data'
 
 if str(DATA_DIR) not in sys.path:
     sys.path.insert(0, str(DATA_DIR))
@@ -123,7 +124,7 @@ def test_load_employees_and_cross_policy_overrides() -> None:
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
 
     employees_df = load_employees(
-        str(DATA_DIR / "employees.csv"),
+        str(DATA_CSV_DIR / 'employees.csv'),
         cfg.get("defaults", {}),
         cfg.get("roles", {}) or {},
         weeks_in_horizon,
@@ -135,18 +136,20 @@ def test_load_employees_and_cross_policy_overrides() -> None:
 
     assert lookup.loc["E001", "cross_max_shifts_week"] == 1
     assert lookup.loc["E001", "cross_max_shifts_month"] == 3
-    assert lookup.loc["E001", "cross_penalty_weight"] == pytest.approx(0.5)
-
     cross_cfg = cfg["cross"]
+    assert lookup.loc["E001", "cross_penalty_weight"] == pytest.approx(
+        cross_cfg["penalty_weight"]
+    )
     assert lookup.loc["E002", "cross_max_shifts_week"] == cross_cfg["max_shifts_week"]
     assert lookup.loc["E002", "cross_max_shifts_month"] == cross_cfg["max_shifts_month"]
     assert lookup.loc["E002", "cross_penalty_weight"] == pytest.approx(
         cross_cfg["penalty_weight"]
     )
-
     assert lookup.loc["E003", "cross_max_shifts_week"] == 0
     assert lookup.loc["E003", "cross_max_shifts_month"] == 0
-    assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(3.0)
+    assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(
+        cross_cfg["penalty_weight"]
+    )
 
 
 def test_resolve_fulltime_baseline_reads_defaults() -> None:
@@ -596,7 +599,7 @@ def test_enrich_employees_with_fte_uses_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
     employees_df = load_employees(
-        str(DATA_DIR / "employees.csv"),
+        str(DATA_CSV_DIR / 'employees.csv'),
         cfg.get("defaults", {}),
         cfg.get("roles", {}) or {},
         weeks_in_horizon,
@@ -740,15 +743,15 @@ def test_shift_role_eligibility_with_allowed_column() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
     employees_df = load_employees(
-        str(DATA_DIR / "employees.csv"),
+        str(DATA_CSV_DIR / 'employees.csv'),
         cfg.get("defaults", {}),
         cfg.get("roles", {}) or {},
         weeks_in_horizon,
         horizon_days,
     )
-    shifts_df = load_shifts(str(DATA_DIR / "shifts.csv"))
+    shifts_df = load_shifts(str(DATA_CSV_DIR / 'shifts.csv'))
     eligibility_df = load_shift_role_eligibility(
-        str(DATA_DIR / "shift_role_eligibility.csv"),
+        str(DATA_CSV_DIR / 'shift_role_eligibility.csv'),
         employees_df,
         shifts_df,
         cfg.get("defaults", {}),
@@ -855,7 +858,7 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
     data_dir = tmp_path / 'data'
     data_dir.mkdir()
 
-    for src in DATA_DIR.glob('*.csv'):
+    for src in DATA_CSV_DIR.glob('*.csv'):
         shutil.copy(src, data_dir / src.name)
 
     pd.DataFrame(columns=['employee_id', 'slot_id', 'lock']).to_csv(

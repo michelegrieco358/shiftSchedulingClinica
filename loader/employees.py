@@ -788,7 +788,6 @@ def load_employees(
     optional_tail_cols = [
         "cross_max_shifts_week",
         "cross_max_shifts_month",
-        "cross_penalty_weight",
     ]
     for col in optional_tail_cols:
         if col in df.columns and col not in ordered_cols:

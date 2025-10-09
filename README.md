@@ -12,16 +12,16 @@ pip install -r requirements.txt
 
 ## Utilizzo
 
-Per eseguire il caricamento completo dei dati usando i file CSV forniti nella directory corrente:
+Per eseguire il caricamento completo dei dati usando i file CSV forniti nella cartella data/:
 
 ```bash
-python -m loader --config config.yaml --data-dir .
+python -m loader --config config.yaml --data-dir data
 ```
 
 Opzionalmente è possibile esportare i DataFrame intermedi in CSV di debug:
 
 ```bash
-python -m loader --config config.yaml --data-dir . --export-csv
+python -m loader --config config.yaml --data-dir data --export-csv
 ```
 
 I file verranno salvati nella cartella `_expanded` all'interno della directory dati.
