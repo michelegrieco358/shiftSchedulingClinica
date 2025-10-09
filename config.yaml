@@ -1,0 +1,54 @@
+horizon:
+  start_date: 2025-11-01
+  end_date: 2025-11-30
+
+rest_rules:
+  min_between_shifts_h: 11
+  post_night_rest_h: 48
+
+defaults:
+  allowed_roles: ["infermiere", "oss", "caposala"]
+  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
+  weekly_rest_min_days: 1
+  contract_hours_by_role_h:
+    infermiere: 168
+    oss: 168
+    caposala: 150
+  absences:
+    count_as_worked_hours: true
+    full_day_hours_by_role_h:
+      INFERMIERE: 7.5
+      OSS: 7.5
+      CAPOSALA: 7.0
+    fallback_contract_daily_avg_h: 7.5
+  rest11h:
+    max_monthly_exceptions: 0
+    max_consecutive_exceptions: 0
+  overstaffing:
+    enabled: true
+    group_cap_default: 0
+  balance:
+    max_balance_delta_month_h: 0
+  night:
+    can_work_night: true
+    max_per_week: 2
+    max_per_month: 8
+roles:
+  infermiere:
+    can_work_night: true
+    night:
+      max_per_week: 2
+      max_per_month: 8
+  oss:
+    can_work_night: true
+  caposala:
+    can_work_night: false
+shift_types:
+  night_codes: ["N"]
+payroll:
+  absence_hours_h: 6
+cross:
+  max_shifts_month: 6
+  penalty_weight: 1.5
+preassignments:
+  allow_cross_reparto: true
