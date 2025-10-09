@@ -1,5 +1,4 @@
 from __future__ import annotations
-from dataclasses import asdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -75,7 +74,14 @@ def load_all_data(cfg: dict | str | Path, data_dir: str | Path) -> dict[str, Any
                 pass
 
     if isinstance(loaded, LoadedData):
-        return asdict(loaded)
+        # ``dataclasses.asdict`` effettua una deepcopy ricorsiva e con DataFrame di
+        # grandi dimensioni può diventare estremamente costosa in termini di
+        # memoria. Creiamo invece un dizionario superficiale mantenendo i
+        # riferimenti originali.
+        return {
+            field: getattr(loaded, field)
+            for field in loaded.__dataclass_fields__  # type: ignore[attr-defined]
+        }
     if isinstance(loaded, dict):
         return loaded
 
