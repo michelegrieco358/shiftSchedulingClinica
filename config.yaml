@@ -45,8 +45,6 @@ roles:
     can_work_night: false
 shift_types:
   night_codes: ["N"]
-payroll:
-  absence_hours_h: 6
 cross:
   max_shifts_month: 6
   penalty_weight: 1.5

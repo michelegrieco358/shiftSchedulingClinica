@@ -1,7 +1,7 @@
-﻿employee_id,nome,ruolo,reparto_id,reparto_label,ore_dovute_mese_h,saldo_prog_iniziale_h,max_balance_delta_month_h,max_month_hours_h,max_week_hours_h,can_work_night,max_nights_week,max_nights_month,saturday_count_ytd,sunday_count_ytd,holiday_count_ytd,cross_max_shifts_month
-E001,Anna Rossi,infermiere,ortopedia,Ortopedia,168,-4,,,,,,,0,0,0,3
+employee_id,nome,ruolo,reparto_id,reparto_label,ore_dovute_mese_h,saldo_prog_iniziale_h,max_balance_delta_month_h,max_month_hours_h,max_week_hours_h,can_work_night,max_nights_week,max_nights_month,saturday_count_ytd,sunday_count_ytd,holiday_count_ytd,cross_max_shifts_month
+E001,Anna Rossi,infermiere,ortopedia,Ortopedia,168,-4,0,,,,,,0,0,0,3
 E002,Marco Bianchi,oss,degenza,Degenza,168,2,6,190,45,yes,3,10,1,0,0,
-E003,Lucia Verdi,caposala,degenza,Degenza,150,0,,180,,no,,,2,1,0,0
-E004,Paolo Neri,infermiere,degenza,Degenza,168,0,,,,yes,3,10,0,0,0,
-E005,Sara Conti,oss,ortopedia,Ortopedia,168,0,,190,45,yes,3,10,0,0,0,
-E006,Giorgia Fabbri,caposala,ortopedia,Ortopedia,150,0,,180,,no,,,0,0,0,0
+E003,Lucia Verdi,caposala,degenza,Degenza,150,0,0,180,,no,,,2,1,0,0
+E004,Paolo Neri,infermiere,degenza,Degenza,168,0,0,,,yes,3,10,0,0,0,
+E005,Sara Conti,oss,ortopedia,Ortopedia,168,0,0,190,45,yes,3,10,0,0,0,
+E006,Giorgia Fabbri,caposala,ortopedia,Ortopedia,150,0,0,180,,no,,,0,0,0,0

@@ -25,7 +25,11 @@ def _read_csv_dicts(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     if not path.exists():
         raise FileNotFoundError(f"File CSV non trovato: {path}")
 
-    with path.open("r", encoding="utf-8", newline="") as f:
+    try:
+        handle = path.open("r", encoding="utf-8-sig", newline="")
+    except UnicodeDecodeError:
+        handle = path.open("r", encoding="utf-8", newline="")
+    with handle as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValidationError(f"{path.name}: nessuna intestazione trovata")
@@ -403,27 +407,51 @@ def _check_shift_role(
     path: Path, employees: list[dict[str, str]], shifts: list[dict[str, str]]
 ) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
-    _require_columns(columns, {"shift_id", "ruolo"}, path.name)
+    column_set = set(columns)
 
-    employee_roles = {row["ruolo"] for row in employees}
-    shift_ids = {row["shift_id"] for row in shifts}
+    if "shift_id" in column_set:
+        shift_col = "shift_id"
+    elif "shift_code" in column_set:
+        shift_col = "shift_code"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti per shift_role_eligibility (attese 'shift_id' o 'shift_code')"
+        )
+
+    if "ruolo" in column_set:
+        role_col = "ruolo"
+    elif "role" in column_set:
+        role_col = "role"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonne mancanti per shift_role_eligibility (attese 'ruolo' o 'role')"
+        )
+
+    employee_roles = {row["ruolo"].strip().upper() for row in employees}
+    shift_ids = {row["shift_id"].strip().upper() for row in shifts}
 
     seen_pairs = set()
     for idx, row in enumerate(rows, start=2):
-        sid = row["shift_id"]
-        role = row["ruolo"]
+        sid_raw = row.get(shift_col, "")
+        role_raw = row.get(role_col, "")
+        sid = sid_raw.strip().upper()
+        role = role_raw.strip().upper()
         if not sid:
-            raise ValidationError(f"{path.name}: shift_id vuoto alla riga {idx}")
+            raise ValidationError(f"{path.name}: {shift_col} vuoto alla riga {idx}")
         if not role:
-            raise ValidationError(f"{path.name}: ruolo vuoto alla riga {idx}")
+            raise ValidationError(f"{path.name}: {role_col} vuoto alla riga {idx}")
         if sid not in shift_ids:
             raise ValidationError(
-                f"{path.name}: shift_id '{sid}' non presente in shifts.csv"
+                f"{path.name}: turno '{sid}' non presente in shifts.csv"
             )
         if role not in employee_roles:
             raise ValidationError(
                 f"{path.name}: ruolo '{role}' non presente in employees.csv"
             )
+
+        row["shift_id"] = sid
+        row["ruolo"] = role
+
         key = (sid, role)
         if key in seen_pairs:
             raise ValidationError(
@@ -433,7 +461,7 @@ def _check_shift_role(
 
     demand_shifts = {"M", "P", "N"}
     for sid in sorted(demand_shifts & shift_ids):
-        if not any(row["shift_id"] == sid for row in rows):
+        if not any(r["shift_id"] == sid for r in rows):
             raise ValidationError(
                 f"{path.name}: nessun ruolo definito per il turno obbligatorio '{sid}'"
             )
@@ -736,7 +764,32 @@ def _check_leaves(path: Path, employees: list[dict[str, str]]) -> tuple[list[dic
     if not path.exists():
         return [], DatasetSummary(label=path.name, rows=0)
     rows, columns = _read_csv_dicts(path)
-    _require_columns(columns, {"employee_id", "start_date", "end_date", "tipo"}, path.name)
+    column_set = set(columns)
+    if "start_date" in column_set:
+        start_col = "start_date"
+    elif "date_from" in column_set:
+        start_col = "date_from"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonna mancante per la data di inizio (attese 'start_date' o 'date_from')"
+        )
+    if "end_date" in column_set:
+        end_col = "end_date"
+    elif "date_to" in column_set:
+        end_col = "date_to"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonna mancante per la data di fine (attese 'end_date' o 'date_to')"
+        )
+    if "tipo" in column_set:
+        type_col = "tipo"
+    elif "type" in column_set:
+        type_col = "type"
+    else:
+        raise ValidationError(
+            f"{path.name}: colonna mancante per il tipo di assenza (attese 'tipo' o 'type')"
+        )
+    _require_columns(columns, {"employee_id", start_col, end_col, type_col}, path.name)
 
     known_employees = {row["employee_id"] for row in employees}
     for idx, row in enumerate(rows, start=2):
@@ -745,12 +798,15 @@ def _check_leaves(path: Path, employees: list[dict[str, str]]) -> tuple[list[dic
             raise ValidationError(
                 f"{path.name}: employee_id '{emp}' non presente in employees.csv"
             )
-        start_dt = _parse_date(row["start_date"], f"{path.name}: start_date")
-        end_dt = _parse_date(row["end_date"], f"{path.name}: end_date")
+        start_dt = _parse_date(row[start_col], f"{path.name}: {start_col}")
+        end_dt = _parse_date(row[end_col], f"{path.name}: {end_col}")
         if end_dt < start_dt:
             raise ValidationError(
-                f"{path.name}: intervallo negativo per employee_id {emp} ({row['start_date']} > {row['end_date']})"
+                f"{path.name}: intervallo negativo per employee_id {emp} ({row[start_col]} > {row[end_col]})"
             )
+        row["start_date"] = row[start_col]
+        row["end_date"] = row[end_col]
+        row["tipo"] = row[type_col]
     return rows, DatasetSummary(label=path.name, rows=len(rows))
 
 

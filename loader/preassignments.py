@@ -331,6 +331,9 @@ def validate_preassignments(
             "preassignments: slot_id inesistente rispetto a shift_slots: " + str(keys)
         )
 
+    merged["shift_code"] = merged["shift_code"].astype(str).str.strip().str.upper()
+    merged["employee_role"] = merged["employee_role"].astype(str).str.strip().str.upper()
+
     reparto_mismatch = merged["employee_reparto_id"] != merged["slot_reparto_id"]
     if not cross_reparto_enabled:
         if reparto_mismatch.any():
@@ -366,8 +369,8 @@ def validate_preassignments(
     if shift_role_eligibility is not None and not shift_role_eligibility.empty:
         elig = shift_role_eligibility.loc[:, ["shift_code", "role", "allowed"]].copy()
         elig = elig.loc[elig["allowed"].fillna(False).astype(bool)]
-        elig["shift_code"] = elig["shift_code"].astype(str).str.strip()
-        elig["role"] = elig["role"].astype(str).str.strip()
+        elig["shift_code"] = elig["shift_code"].astype(str).str.strip().str.upper()
+        elig["role"] = elig["role"].astype(str).str.strip().str.upper()
         elig = (
             elig.drop_duplicates(subset=["shift_code", "role"])
             .rename(columns={"role": "employee_role"})
@@ -430,7 +433,8 @@ def validate_preassignments(
             how="left",
             validate="many_to_many",
         )
-        conflict = merged["lock"].eq(1) & merged["is_absent"].fillna(False)
+        is_absent = merged["is_absent"].astype("boolean", copy=False).fillna(False)
+        conflict = merged["lock"].eq(1) & is_absent.astype(bool)
         if conflict.any():
             bad = merged.loc[
                 conflict,

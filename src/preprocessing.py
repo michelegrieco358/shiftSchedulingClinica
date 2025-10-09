@@ -43,28 +43,52 @@ def _build_absence_index(df: pd.DataFrame | None) -> pd.DataFrame | None:
         return None
     return filtered.reset_index(drop=True)
 
+
+def _pick_frame(store: dict, *keys: str) -> pd.DataFrame | None:
+    """Return the first non-None dataframe found in ``store`` for ``keys``."""
+
+    for key in keys:
+        value = store.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def build_all(dfs: dict, cfg: dict) -> dict:
     """Crea dizionari e strutture dati derivate dai DataFrame principali."""
     bundle = {}
 
     # Estraggo i DataFrame principali
-    df_employees = dfs.get("employees")
-    df_slots = dfs.get("shift_slots")
-    df_elig = dfs.get("shift_role_eligibility")
-    df_pools = dfs.get("role_dept_pools")
-    df_pre = dfs.get("preassignments")
-    df_abs = dfs.get("absences")
-    df_availability = dfs.get("availability")
+    df_employees = _pick_frame(dfs, "employees", "employees_df")
+    df_slots = _pick_frame(dfs, "shift_slots", "shift_slots_df")
+    df_elig = _pick_frame(dfs, "shift_role_eligibility", "shift_role_eligibility_df")
+    df_pools = _pick_frame(dfs, "role_dept_pools", "role_dept_pools_df")
+    df_pre = _pick_frame(dfs, "preassignments", "preassignments_df")
+    df_abs = _pick_frame(dfs, "absences", "leaves_days_df", "leaves_df")
+    df_availability = _pick_frame(dfs, "availability", "availability_df")
 
     if df_employees is None or df_slots is None:
         raise ValueError("Mancano DataFrame essenziali: employees o shift_slots")
+    df_slots = df_slots.copy()
     if "is_night" not in df_slots.columns:
-        df_slots = df_slots.copy()
         df_slots["is_night"] = False
     if "can_work_night" not in df_employees.columns:
         df_employees = df_employees.copy()
         df_employees["can_work_night"] = True
-    
+    if "pool_id" not in df_employees.columns:
+        df_employees = df_employees.copy()
+        df_employees["pool_id"] = ""
+
+    if "date" not in df_slots.columns:
+        if "data" in df_slots.columns:
+            df_slots["date"] = pd.to_datetime(df_slots["data"]).dt.date
+        elif "start_dt" in df_slots.columns:
+            df_slots["date"] = pd.to_datetime(df_slots["start_dt"]).dt.date
+        else:
+            raise ValueError("shift_slots: impossibile derivare la colonna 'date'")
+    else:
+        df_slots["date"] = pd.to_datetime(df_slots["date"]).dt.date
+
     # (1) Indici contigui -----------------------------------------------
     # Dipendenti
     employee_ids = sorted(df_employees["employee_id"].unique())
@@ -125,8 +149,14 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     slot_days_touched = {}
     for _, row in df_slots.iterrows():
         sid = row["slot_id"]
-        start = pd.to_datetime(row["start_datetime"])
-        end = pd.to_datetime(row["end_datetime"])
+        start_source = row.get("start_datetime", row.get("start_dt"))
+        end_source = row.get("end_datetime", row.get("end_dt"))
+        if pd.isna(start_source) or pd.isna(end_source):
+            raise ValueError(
+                f"shift_slots: valori start/end mancanti per slot_id {sid}"
+            )
+        start = pd.to_datetime(start_source)
+        end = pd.to_datetime(end_source)
         days = pd.date_range(start.normalize(), end.normalize()).date
         slot_days_touched[sid] = [did_of[d] for d in days if d in did_of]
 
