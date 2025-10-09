@@ -220,7 +220,13 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             how="left",
             indicator="_availability",
         )
-        candidates = candidates[candidates["_availability"] != "both"].drop(
+        mask_available = candidates["_availability"] != "both"
+        drop_cols = ["_availability", "turno"]
+        candidates = candidates.loc[mask_available].drop(
+            columns=[col for col in drop_cols if col in candidates.columns],
+            errors="ignore",
+        )
+
     if "is_night" in candidates.columns:
         night_mask = candidates["is_night"].fillna(False)
         if "can_work_night" in candidates.columns:
@@ -228,8 +234,6 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             candidates = candidates[~(night_mask & ~can_night)]
         else:
             candidates = candidates[~night_mask]
-            columns=["_availability", "turno"]
-        )
 
     eligible_sids = {eid_of[eid]: [] for eid in df_employees["employee_id"].unique()}
     eligible_eids = {sid_of[sid]: [] for sid in df_slots["slot_id"].unique()}
