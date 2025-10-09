@@ -53,12 +53,8 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_elig = dfs.get("shift_role_eligibility")
     df_pools = dfs.get("role_dept_pools")
     df_pre = dfs.get("preassignments")
-    df_abs = (
-        dfs.get("absences")
-        or dfs.get("leaves_days_df")
-        or dfs.get("leaves_df")
-    )
-    df_availability = dfs.get("availability_df") or dfs.get("availability")
+    df_abs = dfs.get("absences")
+    df_availability = dfs.get("availability")
 
     if df_employees is None or df_slots is None:
         raise ValueError("Mancano DataFrame essenziali: employees o shift_slots")
