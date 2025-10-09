@@ -111,3 +111,4 @@ def test_validate_preassignments_respects_cross_reparto_flag() -> None:
     assert result.loc[0, "reparto_id"] == "ER"
     assert result.loc[0, "shift_code"] == "M"
     assert result.loc[0, "date"] == date(2024, 1, 1)
+

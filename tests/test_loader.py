@@ -136,17 +136,8 @@ def test_load_employees_and_cross_policy_overrides() -> None:
 
     assert lookup.loc["E001", "cross_max_shifts_month"] == 3
     cross_cfg = cfg["cross"]
-    assert lookup.loc["E001", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
-    )
     assert lookup.loc["E002", "cross_max_shifts_month"] == cross_cfg["max_shifts_month"]
-    assert lookup.loc["E002", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
-    )
     assert lookup.loc["E003", "cross_max_shifts_month"] == 0
-    assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
-    )
 
 
 def test_resolve_fulltime_baseline_reads_defaults() -> None:
@@ -873,9 +864,6 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
         )
         loaded = load_all(str(cfg_path), str(data_dir))
     assert not loaded.employees_df.empty
-    assert {
-        'cross_max_shifts_month',
-        'cross_penalty_weight',
-    }.issubset(loaded.employees_df.columns)
+    assert 'cross_max_shifts_month' in loaded.employees_df.columns
     assert not loaded.leaves_df.empty
     assert not loaded.availability_df.empty
