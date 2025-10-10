@@ -5,7 +5,9 @@ from calendar import monthrange
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Dict, Iterable, List, Mapping
+
+DUE_HOUR_OBJECTIVE_SCALE = 1000
 
 import pandas as pd
 
@@ -243,6 +245,14 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     night_info = _add_night_constraints(context, model, assign_vars, bundle)
     rest_info = _add_rest_constraints(context, model, assign_vars, bundle)
     rest_day_info = _add_rest_day_windows(context, model, state_vars, bundle, state_codes)
+
+    objective_terms: List[cp_model.LinearExpr] = []
+    objective_terms.extend(
+        _build_due_hour_objective_terms(context, bundle, hour_info["monthly_deviation"])
+    )
+
+    if objective_terms:
+        model.Minimize(sum(objective_terms))
 
     return ModelArtifacts(
         model=model,
@@ -1119,6 +1129,14 @@ def _should_enforce_month_due_hours(
     horizon_end: date | None,
     history_ranges: Mapping[str, tuple[date, date]],
 ) -> bool:
+    """Return True when the model has full-month coverage for due-hour slack.
+
+    The monthly balance becomes meaningful only if we can account for every day
+    of the month either inside the planning horizon or through historical
+    records.  When that coverage is incomplete we keep the constraint dormant
+    so the solver is not forced to make up for time that falls outside the
+    available data window.
+    """
     bounds = _month_bounds_from_id(month_id)
     if bounds is None:
         return False
@@ -1498,6 +1516,93 @@ def _add_hour_constraints(
             model.Add(expr + history_minutes <= limit)
 
     return {"monthly_balance": monthly_balance_vars, "monthly_deviation": monthly_dev_vars}
+
+
+def _resolve_due_hours_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+    defaults = cfg.get("defaults") if isinstance(cfg.get("defaults"), Mapping) else None
+    if defaults is None:
+        return 0.0
+    balance_cfg = defaults.get("balance") if isinstance(defaults.get("balance"), Mapping) else None
+    if balance_cfg is None:
+        return 0.0
+    raw = balance_cfg.get("due_hours_penalty_weight")
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(value, 0.0)
+
+
+def _resolve_role_daily_minutes(cfg: Mapping[str, Any] | None) -> tuple[dict[str, float], float]:
+    role_minutes: dict[str, float] = {}
+    fallback_minutes = 0.0
+
+    if isinstance(cfg, Mapping):
+        defaults = cfg.get("defaults") if isinstance(cfg.get("defaults"), Mapping) else None
+        abs_cfg = defaults.get("absences") if isinstance(defaults.get("absences"), Mapping) else None
+
+        if isinstance(abs_cfg, Mapping):
+            role_cfg = abs_cfg.get("full_day_hours_by_role_h")
+            if isinstance(role_cfg, Mapping):
+                for role, value in role_cfg.items():
+                    try:
+                        hours = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if hours > 0:
+                        role_minutes[str(role).strip().upper()] = hours * 60.0
+
+            fallback_raw = abs_cfg.get("fallback_contract_daily_avg_h")
+            if fallback_raw is not None:
+                try:
+                    fallback_minutes = float(fallback_raw) * 60.0
+                except (TypeError, ValueError):
+                    fallback_minutes = 0.0
+
+    if fallback_minutes <= 0:
+        fallback_minutes = 480.0
+
+    return role_minutes, fallback_minutes
+
+
+def _build_due_hour_objective_terms(
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    monthly_dev_vars: Mapping[tuple[int, str], cp_model.IntVar],
+) -> List[cp_model.LinearExpr]:
+    if not monthly_dev_vars:
+        return []
+
+    weight = _resolve_due_hours_penalty_weight(context.cfg)
+    if weight <= 0:
+        return []
+
+    role_minutes, fallback_minutes = _resolve_role_daily_minutes(context.cfg)
+    try:
+        role_map = _build_employee_role_map(context.employees, bundle)
+    except ValueError:
+        role_map = {}
+
+    terms: List[cp_model.LinearExpr] = []
+    for (emp_idx, _), deviation_var in monthly_dev_vars.items():
+        role_u = role_map.get(emp_idx, "")
+        minutes = role_minutes.get(role_u, 0.0)
+        if minutes <= 0:
+            minutes = fallback_minutes
+        if minutes <= 0:
+            continue
+        penalty = weight / minutes
+        scaled = penalty * DUE_HOUR_OBJECTIVE_SCALE
+        coeff = int(round(scaled))
+        if coeff <= 0:
+            coeff = 1
+        terms.append(deviation_var * coeff)
+
+    return terms
 
 
 def _build_slot_night_flags(

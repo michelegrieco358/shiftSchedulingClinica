@@ -30,6 +30,7 @@ defaults:
     group_cap_default: 0
   balance:
     max_balance_delta_month_h: 0
+    due_hours_penalty_weight: 1.0
   night:
     max_consecutive_nights: 3
     can_work_night: true
