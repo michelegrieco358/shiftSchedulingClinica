@@ -12,6 +12,7 @@ CONSECUTIVE_NIGHT_OBJECTIVE_SCALE = 1000
 SINGLE_NIGHT_RECOVERY_OBJECTIVE_SCALE = 1000
 REST11_OBJECTIVE_SCALE = 1000
 WEEKLY_REST_OBJECTIVE_SCALE = 1000
+CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
 
 import pandas as pd
 
@@ -291,6 +292,9 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         _build_weekly_rest_objective_terms(
             rest_day_info["weekly_violations"], weekly_rest_weight
         )
+    )
+    objective_terms.extend(
+        _build_cross_assignment_objective_terms(context, bundle, assign_vars)
     )
 
     if objective_terms:
@@ -1590,6 +1594,22 @@ def _resolve_due_hours_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
     return max(value, 0.0)
 
 
+def _resolve_cross_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+    cross_cfg = cfg.get("cross") if isinstance(cfg.get("cross"), Mapping) else None
+    if cross_cfg is None:
+        return 0.0
+    raw = cross_cfg.get("penalty_weight")
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(value, 0.0)
+
+
 def _resolve_role_daily_minutes(cfg: Mapping[str, Any] | None) -> tuple[dict[str, float], float]:
     role_minutes: dict[str, float] = {}
     fallback_minutes = 0.0
@@ -1720,6 +1740,128 @@ def _build_weekly_rest_objective_terms(
         coeff = 1
 
     return [var * coeff for var in violations.values()]
+
+
+def _build_cross_assignment_objective_terms(
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
+) -> List[cp_model.LinearExpr]:
+    if not assign_vars:
+        return []
+
+    weight = _resolve_cross_penalty_weight(
+        context.cfg if isinstance(context.cfg, Mapping) else None
+    )
+    if weight <= 0:
+        return []
+
+    slot_reparto_map = _build_slot_reparto_index(context, bundle)
+    employee_reparto_map = _build_employee_reparto_index(context.employees, bundle)
+    if not slot_reparto_map or not employee_reparto_map:
+        return []
+
+    cross_assignments: list[cp_model.IntVar] = []
+    for (emp_idx, slot_idx), var in assign_vars.items():
+        slot_rep = slot_reparto_map.get(slot_idx)
+        emp_rep = employee_reparto_map.get(emp_idx)
+        if not slot_rep or not emp_rep:
+            continue
+        if slot_rep != emp_rep:
+            cross_assignments.append(var)
+
+    if not cross_assignments:
+        return []
+
+    coeff = int(round(weight * CROSS_ASSIGNMENT_OBJECTIVE_SCALE))
+    if coeff <= 0:
+        coeff = 1
+
+    return [sum(cross_assignments) * coeff]
+
+
+def _build_slot_reparto_index(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, str]:
+    sid_of: Mapping[object, int] = bundle.get("sid_of", {})  # type: ignore[assignment]
+    result: dict[int, str] = {}
+
+    raw_map = bundle.get("slot_reparto")
+    if isinstance(raw_map, Mapping):
+        for slot_id, reparto in raw_map.items():
+            slot_idx = sid_of.get(slot_id)
+            if slot_idx is None:
+                continue
+            if reparto is None or pd.isna(reparto):
+                continue
+            text = str(reparto).strip().upper()
+            if text:
+                result[slot_idx] = text
+
+    if result:
+        return result
+
+    if context.slots.empty or "slot_id" not in context.slots.columns:
+        return result
+    if "reparto_id" not in context.slots.columns:
+        return result
+
+    for row in context.slots.loc[:, ["slot_id", "reparto_id"]].itertuples(index=False):
+        slot_id = getattr(row, "slot_id")
+        slot_idx = sid_of.get(slot_id)
+        if slot_idx is None:
+            continue
+        reparto = getattr(row, "reparto_id")
+        if reparto is None or pd.isna(reparto):
+            continue
+        text = str(reparto).strip().upper()
+        if text and slot_idx not in result:
+            result[slot_idx] = text
+
+    return result
+
+
+def _build_employee_reparto_index(
+    employees: pd.DataFrame, bundle: Mapping[str, object]
+) -> dict[int, str]:
+    if employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return {}
+
+    reparto_cols = [
+        col
+        for col in ("employee_reparto_id", "reparto_id", "department_id")
+        if col in employees.columns
+    ]
+    if not reparto_cols:
+        return {}
+
+    result: dict[int, str] = {}
+    for row in employees.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        reparto_value = None
+        for col in reparto_cols:
+            value = getattr(row, col, None)
+            if value is None or pd.isna(value):
+                continue
+            text = str(value).strip().upper()
+            if text:
+                reparto_value = text
+                break
+
+        if reparto_value:
+            result[emp_idx] = reparto_value
+
+    return result
 
 
 def _build_slot_night_flags(
