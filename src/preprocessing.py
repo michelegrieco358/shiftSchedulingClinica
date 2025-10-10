@@ -2,7 +2,236 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
+
+
+def _ensure_date(value: date | pd.Timestamp | str) -> date:
+    if isinstance(value, date) and not isinstance(value, pd.Timestamp):
+        return value
+    converted = pd.to_datetime(value)
+    if pd.isna(converted):
+        raise ValueError("Invalid date value provided")
+    return converted.date()
+
+
+def compute_month_progressive_balance(
+    employees_df: pd.DataFrame,
+    history_df: pd.DataFrame | None,
+    plan_df: pd.DataFrame | None,
+    month_start: date,
+    month_end: date,
+    horizon_start: date,
+    horizon_end: date,
+) -> pd.DataFrame:
+    """Compute the progressive month balance per employee.
+
+    Notes
+    -----
+    * ``start_balance`` is always the balance at the end of the previous
+      month, regardless of the horizon start day.
+    * When the planning horizon ends at the end of the month the
+      pro-rata computation is skipped and the full ``hours_due_month`` is
+      used instead.
+    """
+
+    required_columns = {"employee_id", "hours_due_month", "start_balance"}
+    missing_columns = required_columns.difference(employees_df.columns)
+    if missing_columns:
+        raise ValueError(
+            f"employees_df is missing required columns: {sorted(missing_columns)}"
+        )
+
+    month_start_d = _ensure_date(month_start)
+    month_end_d = _ensure_date(month_end)
+    horizon_start_d = _ensure_date(horizon_start)
+    horizon_end_d = _ensure_date(horizon_end)
+
+    if horizon_end_d < month_start_d or horizon_start_d > month_end_d:
+        raise ValueError("Horizon is outside the provided month range")
+    if horizon_start_d > horizon_end_d:
+        raise ValueError("horizon_start must be on or before horizon_end")
+
+    base = (
+        employees_df.loc[:, ["employee_id", "hours_due_month", "start_balance"]]
+        .copy()
+    )
+    base["employee_id"] = base["employee_id"].astype(str)
+    base["hours_due_month"] = pd.to_numeric(
+        base["hours_due_month"], errors="coerce"
+    ).fillna(0.0)
+    base["start_balance"] = pd.to_numeric(
+        base["start_balance"], errors="coerce"
+    ).fillna(0.0)
+
+    def _aggregate_hours(
+        df: pd.DataFrame | None,
+        value_column: str,
+        output_column: str,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame({"employee_id": [], output_column: []})
+        work = df.copy()
+        work["employee_id"] = work["employee_id"].astype(str)
+        if "date" not in work.columns:
+            raise ValueError("Expected 'date' column in dataframe")
+        if value_column not in work.columns:
+            raise ValueError(f"Expected '{value_column}' column in dataframe")
+        work_dates = pd.to_datetime(work["date"], errors="coerce").dt.date
+        mask = work_dates.ge(start) & work_dates.le(end)
+        if not mask.any():
+            return pd.DataFrame({"employee_id": [], output_column: []})
+        work = work.loc[mask]
+        work[value_column] = pd.to_numeric(work[value_column], errors="coerce").fillna(0.0)
+        aggregated = work.groupby("employee_id", as_index=False)[value_column].sum()
+        aggregated = aggregated.rename(columns={value_column: output_column})
+        return aggregated
+
+    hist_end = horizon_start_d - timedelta(days=1)
+    if horizon_start_d <= month_start_d:
+        hist_hours = pd.DataFrame({"employee_id": [], "hours_hist_to_hstart": []})
+    else:
+        hist_hours = _aggregate_hours(
+            history_df,
+            "hours_effective",
+            "hours_hist_to_hstart",
+            month_start_d,
+            hist_end,
+        )
+
+    plan_hours = _aggregate_hours(
+        plan_df,
+        "hours_planned",
+        "hours_plan_horizon",
+        horizon_start_d,
+        horizon_end_d,
+    )
+
+    result = base.merge(hist_hours, on="employee_id", how="left").merge(
+        plan_hours, on="employee_id", how="left"
+    )
+
+    result[["hours_hist_to_hstart", "hours_plan_horizon"]] = result[
+        ["hours_hist_to_hstart", "hours_plan_horizon"]
+    ].fillna(0.0)
+    result["hours_eff_to_date"] = (
+        result["hours_hist_to_hstart"] + result["hours_plan_horizon"]
+    )
+
+    if horizon_end_d == month_end_d:
+        result["hours_due_period"] = result["hours_due_month"]
+    else:
+        days_in_month = (month_end_d - month_start_d).days + 1
+        days_to_date = (horizon_end_d - month_start_d).days + 1
+        ratio = days_to_date / days_in_month
+        result["hours_due_period"] = result["hours_due_month"] * ratio
+
+    result["end_balance"] = (
+        result["start_balance"]
+        + (result["hours_eff_to_date"] - result["hours_due_period"])
+    )
+
+    columns = [
+        "employee_id",
+        "hours_hist_to_hstart",
+        "hours_plan_horizon",
+        "hours_eff_to_date",
+        "hours_due_period",
+        "start_balance",
+        "end_balance",
+    ]
+
+    return result[columns].sort_values("employee_id").reset_index(drop=True)
+
+
+def compute_adaptive_coefficients(
+    balances: pd.Series | pd.DataFrame,
+    p_low: float = 0.10,
+    p_high: float = 0.90,
+    abs_min: float = -60.0,
+    abs_max: float = 60.0,
+    min_range: float = 10.0,
+) -> pd.DataFrame:
+    """Return adaptive coefficients for under/over-hour penalties.
+
+    Parameters
+    ----------
+    balances:
+        A series indexed by ``employee_id`` containing the starting balance
+        (in hours, measured at the end of the previous month). A DataFrame
+        with columns ``employee_id`` and ``start_balance`` is also accepted.
+    p_low, p_high:
+        Percentiles used to derive a robust operating range before clamping.
+    abs_min, abs_max:
+        Safety clamps applied after percentile extraction.
+    min_range:
+        Minimum desired range width in hours. When the percentile window is
+        narrower the range is expanded symmetrically around the median.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame indexed by ``employee_id`` with the columns ``c_under`` and
+        ``c_over`` containing values in the interval ``[1, 2]``.
+    """
+
+    if isinstance(balances, pd.DataFrame):
+        required_cols = {"employee_id", "start_balance"}
+        missing = required_cols.difference(balances.columns)
+        if missing:
+            raise ValueError(
+                "balances dataframe is missing required columns: "
+                f"{sorted(missing)}"
+            )
+        index = balances["employee_id"].astype(str).str.strip()
+        values = pd.to_numeric(balances["start_balance"], errors="coerce")
+        series = pd.Series(values.to_numpy(), index=index)
+    else:
+        series = pd.Series(dtype=float) if balances is None else balances.copy()
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series)
+        if series.index.name != "employee_id":
+            series.index = series.index.astype(str)
+        series.index = series.index.map(lambda x: str(x).strip())
+        series = pd.to_numeric(series, errors="coerce")
+
+    if series.empty:
+        return pd.DataFrame(columns=["c_under", "c_over"], index=series.index)
+
+    values = series.fillna(0.0).to_numpy(dtype=float)
+
+    if np.allclose(values, values[0]):
+        coeffs = pd.DataFrame(1.5, index=series.index, columns=["c_under", "c_over"])
+        return coeffs
+
+    q_low = float(np.nanquantile(values, p_low))
+    q_high = float(np.nanquantile(values, p_high))
+
+    if q_high - q_low < min_range:
+        median = float(np.nanmedian(values))
+        half_range = max(min_range / 2.0, 0.0)
+        q_low = median - half_range
+        q_high = median + half_range
+
+    q_low = max(q_low, abs_min)
+    q_high = min(q_high, abs_max)
+    if q_high <= q_low:
+        q_high = q_low + 1.0
+
+    clamped = np.clip(values, q_low, q_high)
+    scale = q_high - q_low
+    scaled = (clamped - q_low) / scale
+    scaled = np.clip(scaled, 0.0, 1.0)
+
+    c_under = 1.0 + scaled
+    c_over = 2.0 - scaled
+
+    coeffs = pd.DataFrame(
+        {"c_under": c_under, "c_over": c_over}, index=series.index
+    )
+    return coeffs
 
 
 def _normalize_roles(series: pd.Series) -> pd.Series:

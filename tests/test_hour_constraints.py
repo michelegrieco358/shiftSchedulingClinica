@@ -72,6 +72,7 @@ def _make_context(
         "employee_id": ["E1"],
         "role": ["INFERMIERE"],
         "ore_dovute_mese_h": [due_hours],
+        "start_balance": [0.0],
     }
     employees_dict["max_week_hours_h"] = [max_week_hours]
     employees_dict["max_month_hours_h"] = [max_month_hours]
@@ -270,12 +271,14 @@ def test_monthly_due_slack_reflects_difference() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
-    assert artifacts.monthly_hour_deviation
-    key = next(iter(artifacts.monthly_hour_deviation.keys()))
-    deviation = artifacts.monthly_hour_deviation[key]
+    assert artifacts.monthly_hour_under_slack
+    key = next(iter(artifacts.monthly_hour_under_slack.keys()))
+    under_slack = artifacts.monthly_hour_under_slack[key]
+    over_slack = artifacts.monthly_hour_over_slack[key]
     balance = artifacts.monthly_hour_balance[key]
 
-    assert solver.Value(deviation) == 300
+    assert solver.Value(under_slack) == 300
+    assert solver.Value(over_slack) == 0
     assert solver.Value(balance) == -300
 
 
@@ -298,13 +301,15 @@ def test_monthly_due_includes_history_summary() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
-    assert artifacts.monthly_hour_deviation
-    key = next(iter(artifacts.monthly_hour_deviation.keys()))
-    deviation = artifacts.monthly_hour_deviation[key]
+    assert artifacts.monthly_hour_under_slack
+    key = next(iter(artifacts.monthly_hour_under_slack.keys()))
+    under_slack = artifacts.monthly_hour_under_slack[key]
+    over_slack = artifacts.monthly_hour_over_slack[key]
     balance = artifacts.monthly_hour_balance[key]
 
     # History contributes 360 minutes, plan 480 minutes => deficit 360 minutes
-    assert solver.Value(deviation) == 360
+    assert solver.Value(under_slack) == 360
+    assert solver.Value(over_slack) == 0
     assert solver.Value(balance) == -360
 
 
@@ -318,7 +323,7 @@ def test_monthly_due_skipped_for_partial_month_without_history() -> None:
 
     artifacts = build_model(context)
 
-    assert not artifacts.monthly_hour_deviation
+    assert not artifacts.monthly_hour_under_slack
 
 
 def test_monthly_due_skipped_when_history_missing_for_early_gap() -> None:
@@ -331,7 +336,7 @@ def test_monthly_due_skipped_when_history_missing_for_early_gap() -> None:
 
     artifacts = build_model(context)
 
-    assert not artifacts.monthly_hour_deviation
+    assert not artifacts.monthly_hour_under_slack
 
 
 def test_monthly_due_skipped_when_history_not_long_enough() -> None:
@@ -350,7 +355,7 @@ def test_monthly_due_skipped_when_history_not_long_enough() -> None:
 
     artifacts = build_model(context)
 
-    assert not artifacts.monthly_hour_deviation
+    assert not artifacts.monthly_hour_under_slack
 
 
 def test_due_hour_objective_prefers_matching_due_hours() -> None:
@@ -370,19 +375,20 @@ def test_due_hour_objective_prefers_matching_due_hours() -> None:
 
     assert status == cp_model.OPTIMAL
 
-    deviation_var = next(iter(artifacts.monthly_hour_deviation.values()))
+    under_eff = next(iter(artifacts.monthly_hour_under_effective.values()))
     first_slot = artifacts.assign_vars[(0, 0)]
     second_slot = artifacts.assign_vars[(0, 1)]
 
     assert solver.Value(first_slot) == 1
     assert solver.Value(second_slot) == 1
-    assert solver.Value(deviation_var) == 0
+    assert solver.Value(under_eff) == 0
+    assert all(solver.Value(var) == 0 for var in artifacts.monthly_hour_over_effective.values())
 
     model_proto = artifacts.model.Proto()
     target_index = next(
         idx
         for idx, variable in enumerate(model_proto.variables)
-        if variable.name == deviation_var.Name()
+        if variable.name == under_eff.Name()
     )
     coeff_value = None
     for var_ref, coeff in zip(model_proto.objective.vars, model_proto.objective.coeffs, strict=False):
@@ -390,9 +396,9 @@ def test_due_hour_objective_prefers_matching_due_hours() -> None:
             coeff_value = coeff
             break
 
-    expected_coeff = int(round(
-        (3.0 / (7.5 * 60.0)) * DUE_HOUR_OBJECTIVE_SCALE
-    ))
+    expected_coeff = int(
+        round((3.0 * 1.5 / (7.5 * 60.0)) * DUE_HOUR_OBJECTIVE_SCALE)
+    )
     assert coeff_value == expected_coeff
 
 
