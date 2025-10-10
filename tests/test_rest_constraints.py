@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import Iterable
 
 import pandas as pd
@@ -17,6 +17,11 @@ def _make_rest_context(
     rest_threshold: float,
     monthly_limit: int | None,
     consecutive_limit: int | None,
+    weekly_min: int | None = None,
+    biweekly_min: int | None = None,
+    employee_weekly_override: int | None = None,
+    employee_biweekly_override: int | None = None,
+    history_rows: Iterable[dict[str, object]] | None = None,
 ) -> ModelContext:
     slot_days = list(slot_days)
     gap_hours = list(gap_hours)
@@ -31,6 +36,11 @@ def _make_rest_context(
             "rest11h_max_consecutive_exceptions": [consecutive_limit],
         }
     )
+
+    if employee_weekly_override is not None:
+        employees["weekly_rest_min_days"] = [employee_weekly_override]
+    if employee_biweekly_override is not None:
+        employees["biweekly_rest_min_days"] = [employee_biweekly_override]
 
     slots = pd.DataFrame(
         {
@@ -81,7 +91,7 @@ def _make_rest_context(
     }
     slot_duration_min = {slot_id: 480 for slot_id in slot_ids}
 
-    cfg = {
+    defaults_block = {
         "horizon": {
             "start_date": horizon_start.isoformat(),
             "end_date": horizon_end.isoformat(),
@@ -91,9 +101,13 @@ def _make_rest_context(
             "rest11h": {
                 "max_monthly_exceptions": monthly_limit,
                 "max_consecutive_exceptions": consecutive_limit,
-            }
+            },
+            "weekly_rest_min_days": weekly_min if weekly_min is not None else 0,
+            "biweekly_rest_min_days": biweekly_min if biweekly_min is not None else 0,
         },
     }
+
+    cfg = defaults_block
 
     empty_df = pd.DataFrame()
 
@@ -124,6 +138,8 @@ def _make_rest_context(
         ),
     }
 
+    history_df = pd.DataFrame(history_rows) if history_rows else empty_df
+
     return ModelContext(
         cfg=cfg,
         employees=employees,
@@ -133,7 +149,7 @@ def _make_rest_context(
         slot_requirements=empty_df,
         availability=empty_df,
         leaves=empty_df,
-        history=empty_df,
+        history=history_df,
         preassign_must=empty_df,
         preassign_forbid=empty_df,
         gap_pairs=gap_pairs,
@@ -221,3 +237,152 @@ def test_rest_consecutive_limit_blocks_back_to_back_exceptions() -> None:
     status = solver.Solve(model)
 
     assert status == cp_model.INFEASIBLE
+
+
+def test_weekly_rest_violation_is_soft() -> None:
+    days = [date(2025, 1, 1) + timedelta(days=offset) for offset in range(14)]
+    slot_days = [day.isoformat() for day in days]
+    history_rows = [
+        {"employee_id": "E1", "turno": "R", "data": "2024-12-30"},
+        {"employee_id": "E1", "turno": "R", "data": "2024-12-31"},
+    ]
+
+    context = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0] * len(slot_days),
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=1,
+        biweekly_min=2,
+        history_rows=history_rows,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+
+    sid_of = artifacts.slot_index
+    day_index = artifacts.day_index
+    state_vars = artifacts.state_vars
+    assign_vars = artifacts.assign_vars
+
+    rest_days = {days[7], days[12]}
+
+    for idx, current_day in enumerate(days):
+        slot_idx = sid_of[idx + 1]
+        day_idx = day_index[current_day]
+        if current_day in rest_days:
+            model.Add(assign_vars[(0, slot_idx)] == 0)
+            model.Add(state_vars[(0, day_idx, "R")] == 1)
+        elif idx <= 6:
+            model.Add(assign_vars[(0, slot_idx)] == 1)
+            model.Add(state_vars[(0, day_idx, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+    first_week_end = day_index[date(2025, 1, 7)]
+    violation_var = artifacts.weekly_rest_violations[(0, first_week_end)]
+    assert solver.Value(violation_var) == 1
+
+    second_week_end = day_index[date(2025, 1, 14)]
+    violation_second = artifacts.weekly_rest_violations[(0, second_week_end)]
+    assert solver.Value(violation_second) == 0
+
+
+def test_biweekly_rest_constraint_blocks_missing_rest() -> None:
+    days = [date(2025, 2, 1) + timedelta(days=offset) for offset in range(14)]
+    slot_days = [day.isoformat() for day in days]
+
+    context = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0] * len(slot_days),
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=1,
+        biweekly_min=2,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+
+    sid_of = artifacts.slot_index
+    day_index = artifacts.day_index
+    state_vars = artifacts.state_vars
+    assign_vars = artifacts.assign_vars
+
+    rest_day = days[5]
+
+    for idx, current_day in enumerate(days):
+        slot_idx = sid_of[idx + 1]
+        day_idx = day_index[current_day]
+        if current_day == rest_day:
+            model.Add(assign_vars[(0, slot_idx)] == 0)
+            model.Add(state_vars[(0, day_idx, "R")] == 1)
+        else:
+            model.Add(assign_vars[(0, slot_idx)] == 1)
+            model.Add(state_vars[(0, day_idx, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.INFEASIBLE
+
+
+def test_holiday_days_count_as_rest() -> None:
+    days = [date(2025, 3, 1) + timedelta(days=offset) for offset in range(14)]
+    slot_days = [day.isoformat() for day in days]
+
+    context = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0] * len(slot_days),
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=1,
+        biweekly_min=2,
+        history_rows=[
+            {"employee_id": "E1", "turno": "R", "data": "2025-02-24"},
+            {"employee_id": "E1", "turno": "R", "data": "2025-02-25"},
+        ],
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+
+    sid_of = artifacts.slot_index
+    day_index = artifacts.day_index
+    state_vars = artifacts.state_vars
+    assign_vars = artifacts.assign_vars
+
+    holiday_days = {days[2], days[9]}
+
+    for idx, current_day in enumerate(days):
+        slot_idx = sid_of[idx + 1]
+        day_idx = day_index[current_day]
+        if current_day in holiday_days:
+            model.Add(assign_vars[(0, slot_idx)] == 0)
+            model.Add(state_vars[(0, day_idx, "F")] == 1)
+        elif idx <= 6:
+            model.Add(assign_vars[(0, slot_idx)] == 1)
+            model.Add(state_vars[(0, day_idx, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+    first_week_end = day_index[date(2025, 3, 7)]
+    second_week_end = day_index[date(2025, 3, 14)]
+
+    assert solver.Value(artifacts.weekly_rest_violations[(0, first_week_end)]) == 0
+    assert solver.Value(artifacts.weekly_rest_violations[(0, second_week_end)]) == 0

@@ -10,6 +10,7 @@ defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
   departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
   weekly_rest_min_days: 1
+  biweekly_rest_min_days: 2
   contract_hours_by_role_h:
     infermiere: 168
     oss: 168
