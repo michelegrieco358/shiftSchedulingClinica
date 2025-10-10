@@ -228,6 +228,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                         model.Add(state_var == 0)
 
     hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
+    _add_night_constraints(context, model, assign_vars, bundle)
 
     return ModelArtifacts(
         model=model,
@@ -588,6 +589,30 @@ def _pick_float(row: pd.Series, columns: Iterable[str]) -> float | None:
     return None
 
 
+def _pick_float_from_mapping(
+    data: Mapping[str, Any] | None, columns: Iterable[str]
+) -> float | None:
+    if not isinstance(data, Mapping):
+        return None
+    for col in columns:
+        if col not in data:
+            continue
+        value = data[col]
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        if not text or text.upper() == "NAN":
+            continue
+        try:
+            return float(value)
+        except Exception:
+            try:
+                return float(text.replace(",", "."))
+            except Exception:
+                continue
+    return None
+
+
 def _extract_employee_hour_params(
     context: ModelContext, bundle: Mapping[str, object]
 ) -> dict[int, dict[str, int | None]]:
@@ -651,6 +676,184 @@ def _extract_employee_hour_params(
             "due_minutes": int(round(due_hours * 60)) if due_hours is not None else None,
             "max_week_minutes": int(round(max_week_hours * 60)) if max_week_hours is not None else None,
             "max_month_minutes": int(round(max_month_hours * 60)) if max_month_hours is not None else None,
+        }
+
+    return params
+
+
+def _resolve_night_codes(cfg: Mapping[str, Any] | None) -> set[str]:
+    if not isinstance(cfg, Mapping):
+        return set()
+    shift_types = cfg.get("shift_types")
+    codes: set[str] = set()
+    if isinstance(shift_types, Mapping):
+        raw_codes = shift_types.get("night_codes", [])
+        if isinstance(raw_codes, str):
+            raw_iterable = [raw_codes]
+        elif isinstance(raw_codes, Iterable):
+            raw_iterable = list(raw_codes)
+        else:
+            raw_iterable = [raw_codes]
+        for code in raw_iterable:
+            code_str = str(code).strip().upper()
+            if code_str:
+                codes.add(code_str)
+    if not codes:
+        codes.add("N")
+    return codes
+
+
+def _extract_employee_night_params(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, dict[str, int | None]]:
+    employees = context.employees
+    if employees is None or employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return {}
+
+    try:
+        role_map = _build_employee_role_map(employees, bundle)
+    except ValueError:
+        role_map = {}
+
+    cfg = context.cfg if isinstance(context.cfg, Mapping) else {}
+    defaults = cfg.get("defaults") if isinstance(cfg, Mapping) else None
+    default_night_cfg = (
+        defaults.get("night") if isinstance(defaults, Mapping) else None
+    )
+    global_night_cfg = cfg.get("night") if isinstance(cfg, Mapping) else None
+
+    roles_cfg = cfg.get("roles") if isinstance(cfg, Mapping) else None
+    role_limits: dict[str, dict[str, float | None]] = {}
+    if isinstance(roles_cfg, Mapping):
+        for role_name, role_cfg in roles_cfg.items():
+            if not isinstance(role_cfg, Mapping):
+                continue
+            role_u = str(role_name).strip().upper()
+            role_night_cfg = role_cfg.get("night") if isinstance(role_cfg.get("night"), Mapping) else None
+            week_limit = _pick_float_from_mapping(
+                role_night_cfg,
+                (
+                    "max_per_week",
+                    "max_week",
+                    "max_week_nights",
+                    "max_nights_week",
+                ),
+            )
+            month_limit = _pick_float_from_mapping(
+                role_night_cfg,
+                (
+                    "max_per_month",
+                    "max_month",
+                    "max_month_nights",
+                    "max_nights_month",
+                ),
+            )
+            if week_limit is None:
+                week_limit = _pick_float_from_mapping(
+                    role_cfg,
+                    (
+                        "max_nights_week",
+                        "max_week_nights",
+                        "max_per_week",
+                    ),
+                )
+            if month_limit is None:
+                month_limit = _pick_float_from_mapping(
+                    role_cfg,
+                    (
+                        "max_nights_month",
+                        "max_month_nights",
+                        "max_per_month",
+                    ),
+                )
+            role_limits[role_u] = {"week": week_limit, "month": month_limit}
+
+    params: dict[int, dict[str, int | None]] = {}
+    for _, row in employees.iterrows():
+        emp_id = str(row.get("employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        week_limit = _pick_float(row, [
+            "max_nights_week",
+            "max_week_nights",
+            "max_night_week",
+            "max_nights_per_week",
+        ])
+        month_limit = _pick_float(row, [
+            "max_nights_month",
+            "max_month_nights",
+            "max_night_month",
+            "max_nights_per_month",
+        ])
+
+        role_u = role_map.get(emp_idx, "")
+        role_cfg = role_limits.get(role_u)
+        if week_limit is None and role_cfg is not None:
+            week_limit = role_cfg.get("week")
+        if month_limit is None and role_cfg is not None:
+            month_limit = role_cfg.get("month")
+
+        if week_limit is None:
+            week_limit = _pick_float_from_mapping(
+                default_night_cfg,
+                (
+                    "max_per_week",
+                    "max_week",
+                    "max_week_nights",
+                    "max_nights_week",
+                ),
+            )
+        if month_limit is None:
+            month_limit = _pick_float_from_mapping(
+                default_night_cfg,
+                (
+                    "max_per_month",
+                    "max_month",
+                    "max_month_nights",
+                    "max_nights_month",
+                ),
+            )
+
+        if week_limit is None:
+            week_limit = _pick_float_from_mapping(
+                global_night_cfg,
+                (
+                    "max_per_week",
+                    "max_week",
+                    "max_week_nights",
+                    "max_nights_week",
+                ),
+            )
+        if month_limit is None:
+            month_limit = _pick_float_from_mapping(
+                global_night_cfg,
+                (
+                    "max_per_month",
+                    "max_month",
+                    "max_month_nights",
+                    "max_nights_month",
+                ),
+            )
+
+        week_limit_int = None
+        if week_limit is not None and pd.notna(week_limit):
+            week_limit_int = max(int(round(float(week_limit))), 0)
+
+        month_limit_int = None
+        if month_limit is not None and pd.notna(month_limit):
+            month_limit_int = max(int(round(float(month_limit))), 0)
+
+        params[emp_idx] = {
+            "max_week_nights": week_limit_int,
+            "max_month_nights": month_limit_int,
         }
 
     return params
@@ -736,6 +939,37 @@ def _build_month_history_minutes(
     return result
 
 
+def _build_month_history_nights(
+    bundle: Mapping[str, object],
+    eid_of: Mapping[str, int],
+) -> dict[tuple[int, str], int]:
+    summary = bundle.get("history_month_to_date")
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        return {}
+    if "night_shifts_count" not in summary.columns:
+        return {}
+
+    result: dict[tuple[int, str], int] = {}
+    for row in summary.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+        month_start = _parse_date_value(getattr(row, "window_start_date", None))
+        if month_start is None:
+            continue
+        month_id = f"{month_start:%Y-%m}"
+        try:
+            count_value = int(round(float(getattr(row, "night_shifts_count", 0))))
+        except Exception:
+            count_value = 0
+        result[(emp_idx, month_id)] = result.get((emp_idx, month_id), 0) + max(count_value, 0)
+
+    return result
+
+
 def _compute_history_minutes_by_week(
     context: ModelContext,
     week_by_date: Mapping[date, str],
@@ -791,6 +1025,65 @@ def _compute_history_minutes_by_week(
     accumulate(context.history, "shift_duration_min")
     if count_leaves:
         accumulate(context.leaves, "shift_duration_min")
+
+    return result
+
+
+def _compute_history_nights_by_week(
+    context: ModelContext,
+    week_by_date: Mapping[date, str],
+    horizon_start: date | None,
+    horizon_week_ids: set[str],
+    night_codes: set[str],
+    eid_of: Mapping[str, int],
+) -> dict[tuple[int, str], int]:
+    if not week_by_date or not horizon_week_ids or not night_codes:
+        return {}
+
+    history = context.history
+    if history is None or history.empty:
+        return {}
+    if "employee_id" not in history.columns or "turno" not in history.columns:
+        return {}
+
+    work = history.copy()
+
+    day_series = None
+    for col in ("data_dt", "date_dt", "giorno_dt", "day_dt"):
+        if col in work.columns:
+            day_series = pd.to_datetime(work[col], errors="coerce").dt.date
+            break
+    if day_series is None:
+        for col in ("data", "date", "giorno", "day"):
+            if col in work.columns:
+                day_series = pd.to_datetime(work[col], errors="coerce").dt.date
+                break
+    if day_series is None:
+        return {}
+
+    work = work.assign(_day=day_series).dropna(subset=["_day"])
+    if horizon_start is not None:
+        work = work[work["_day"] < horizon_start]
+    if work.empty:
+        return {}
+
+    work["week_id"] = work["_day"].map(week_by_date)
+    work = work[work["week_id"].isin(horizon_week_ids)]
+    if work.empty:
+        return {}
+
+    turni = work["turno"].astype(str).str.strip().str.upper()
+    work = work[turni.isin(night_codes)]
+    if work.empty:
+        return {}
+
+    result: dict[tuple[int, str], int] = {}
+    counts = work.groupby(["employee_id", "week_id"]).size()
+    for (emp_id, week_id), value in counts.items():
+        emp_idx = eid_of.get(str(emp_id).strip())
+        if emp_idx is None:
+            continue
+        result[(emp_idx, str(week_id))] = result.get((emp_idx, str(week_id)), 0) + int(value)
 
     return result
 
@@ -909,6 +1202,130 @@ def _add_hour_constraints(
             model.Add(expr + history_minutes <= limit)
 
     return {"monthly_balance": monthly_balance_vars, "monthly_deviation": monthly_dev_vars}
+
+
+def _build_slot_night_flags(
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    night_codes: set[str],
+) -> dict[int, bool]:
+    sid_of: Mapping[object, int] = bundle.get("sid_of", {})  # type: ignore[assignment]
+    flags: dict[int, bool] = {}
+
+    if not context.slots.empty and "slot_id" in context.slots.columns:
+        if "is_night" in context.slots.columns:
+            for row in context.slots.loc[:, ["slot_id", "is_night"]].itertuples(index=False):
+                slot_idx = sid_of.get(getattr(row, "slot_id"))
+                if slot_idx is None:
+                    continue
+                flags[slot_idx] = bool(getattr(row, "is_night"))
+
+        if not flags and "shift_code" in context.slots.columns:
+            shift_series = context.slots["shift_code"].astype(str).str.strip().str.upper()
+            for slot_id, code in zip(context.slots["slot_id"], shift_series, strict=False):
+                slot_idx = sid_of.get(slot_id)
+                if slot_idx is not None:
+                    flags[slot_idx] = code in night_codes
+
+    return flags
+
+
+def _add_night_constraints(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    assign_vars: Dict[tuple[int, int], cp_model.IntVar],
+    bundle: Mapping[str, object],
+) -> None:
+    if not assign_vars:
+        return
+
+    night_codes = _resolve_night_codes(context.cfg if isinstance(context.cfg, Mapping) else {})
+    if not night_codes:
+        return
+
+    (
+        week_by_date,
+        month_by_date,
+        day_week_map,
+        day_month_map,
+        horizon_start,
+        _horizon_end,
+        horizon_week_ids,
+    ) = _extract_calendar_maps(context, bundle)
+
+    if not week_by_date and not month_by_date:
+        return
+
+    slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
+    if not slot_date2:
+        return
+
+    slot_night_flags = _build_slot_night_flags(context, bundle, night_codes)
+    if not slot_night_flags:
+        return
+
+    week_slots: dict[str, list[int]] = defaultdict(list)
+    month_slots: dict[str, list[int]] = defaultdict(list)
+
+    for slot_idx, day_idx in slot_date2.items():
+        if not slot_night_flags.get(slot_idx, False):
+            continue
+        week_id = day_week_map.get(day_idx)
+        if week_id is not None:
+            week_slots[week_id].append(slot_idx)
+        month_id = day_month_map.get(day_idx)
+        if month_id is not None:
+            month_slots[month_id].append(slot_idx)
+
+    employee_limits = _extract_employee_night_params(context, bundle)
+    if not employee_limits:
+        return
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    month_history = _build_month_history_nights(bundle, eid_of)
+    week_history = _compute_history_nights_by_week(
+        context,
+        week_by_date,
+        horizon_start,
+        horizon_week_ids,
+        night_codes,
+        eid_of,
+    )
+
+    for _, month_id in month_history.keys():
+        month_slots.setdefault(month_id, [])
+    for _, week_id in week_history.keys():
+        week_slots.setdefault(week_id, [])
+
+    for month_id, slots_in_month in month_slots.items():
+        for emp_idx, limits in employee_limits.items():
+            limit = limits.get("max_month_nights")
+            if limit is None:
+                continue
+            history_count = month_history.get((emp_idx, month_id), 0)
+            terms = [
+                assign_vars[(emp_idx, slot_idx)]
+                for slot_idx in slots_in_month
+                if (emp_idx, slot_idx) in assign_vars
+            ]
+            if terms or history_count:
+                expr = sum(terms) if terms else 0
+                model.Add(expr + history_count <= limit)
+
+    for week_id, slots_in_week in week_slots.items():
+        for emp_idx, limits in employee_limits.items():
+            limit = limits.get("max_week_nights")
+            if limit is None:
+                continue
+            history_count = week_history.get((emp_idx, week_id), 0)
+            terms = [
+                assign_vars[(emp_idx, slot_idx)]
+                for slot_idx in slots_in_week
+                if (emp_idx, slot_idx) in assign_vars
+            ]
+            if terms or history_count:
+                expr = sum(terms) if terms else 0
+                model.Add(expr + history_count <= limit)
 
 
 def _build_employee_role_map(employees: pd.DataFrame, bundle: Mapping[str, object]) -> dict[int, str]:
