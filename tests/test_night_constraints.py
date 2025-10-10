@@ -46,6 +46,8 @@ def _make_context(
     slot_days: list[str],
     week_limit: int | None,
     month_limit: int | None,
+    consecutive_limit: int | None = None,
+    penalty_weight: float | None = None,
     history_night_days: list[str] | None = None,
     month_history_count: int = 0,
 ) -> ModelContext:
@@ -58,6 +60,8 @@ def _make_context(
             "max_month_hours_h": [pd.NA],
             "max_nights_week": [week_limit],
             "max_nights_month": [month_limit],
+            "max_consecutive_nights": [consecutive_limit],
+            "penalty_extra_consecutive_night": [penalty_weight],
         }
     )
 
@@ -211,3 +215,83 @@ def test_monthly_night_limit_counts_month_history() -> None:
     status = solver.Solve(model)
 
     assert status == cp_model.INFEASIBLE
+
+
+def test_consecutive_night_limit_blocks_long_streak() -> None:
+    context = _make_context(
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 4),
+        slot_days=["2025-01-01", "2025-01-02", "2025-01-03"],
+        week_limit=None,
+        month_limit=None,
+        consecutive_limit=2,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+    model.Add(artifacts.assign_vars[(0, 0)] == 1)
+    model.Add(artifacts.assign_vars[(0, 1)] == 1)
+    model.Add(artifacts.assign_vars[(0, 2)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.INFEASIBLE
+
+
+def test_consecutive_night_limit_considers_history() -> None:
+    context = _make_context(
+        horizon_start=date(2025, 1, 3),
+        horizon_end=date(2025, 1, 4),
+        slot_days=["2025-01-03"],
+        week_limit=None,
+        month_limit=None,
+        consecutive_limit=2,
+        history_night_days=["2025-01-01", "2025-01-02"],
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+    model.Add(artifacts.assign_vars[(0, 0)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.INFEASIBLE
+
+
+def test_consecutive_night_penalty_counts_extra_nights() -> None:
+    context = _make_context(
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 4),
+        slot_days=["2025-01-01", "2025-01-02", "2025-01-03"],
+        week_limit=None,
+        month_limit=None,
+        consecutive_limit=4,
+        penalty_weight=1.0,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+    model.Add(artifacts.assign_vars[(0, 0)] == 1)
+    model.Add(artifacts.assign_vars[(0, 1)] == 1)
+    model.Add(artifacts.assign_vars[(0, 2)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+    penalties = artifacts.consecutive_night_penalties
+    assert penalties
+    slot_date2 = context.bundle["slot_date2"]
+    day_indices = [day_idx for _, day_idx in sorted(slot_date2.items())]
+    assert solver.Value(penalties[(0, day_indices[0])]) == 0
+    assert solver.Value(penalties[(0, day_indices[1])]) == 1
+    assert solver.Value(penalties[(0, day_indices[2])]) == 2
+
+    total_var = artifacts.consecutive_night_penalty_totals[0]
+    assert solver.Value(total_var) == 3
+
+    weights = artifacts.consecutive_night_penalty_weights
+    assert weights.get(0) == 1.0

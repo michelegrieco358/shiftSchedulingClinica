@@ -66,6 +66,10 @@ class ModelArtifacts:
     state_codes: tuple[str, ...]
     monthly_hour_balance: Dict[tuple[int, str], cp_model.IntVar]
     monthly_hour_deviation: Dict[tuple[int, str], cp_model.IntVar]
+    night_assignment_by_day: Dict[tuple[int, int], cp_model.BoolVar]
+    consecutive_night_penalties: Dict[tuple[int, int], cp_model.IntVar]
+    consecutive_night_penalty_totals: Dict[int, cp_model.IntVar]
+    consecutive_night_penalty_weights: Mapping[int, float]
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
@@ -228,7 +232,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                         model.Add(state_var == 0)
 
     hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
-    _add_night_constraints(context, model, assign_vars, bundle)
+    night_info = _add_night_constraints(context, model, assign_vars, bundle)
 
     return ModelArtifacts(
         model=model,
@@ -240,6 +244,10 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         state_codes=state_codes,
         monthly_hour_balance=hour_info["monthly_balance"],
         monthly_hour_deviation=hour_info["monthly_deviation"],
+        night_assignment_by_day=night_info["night_by_day"],
+        consecutive_night_penalties=night_info["extra_penalties"],
+        consecutive_night_penalty_totals=night_info["extra_totals"],
+        consecutive_night_penalty_weights=night_info["penalty_weights"],
     )
 
 
@@ -752,6 +760,24 @@ def _extract_employee_night_params(
                     "max_nights_month",
                 ),
             )
+            consecutive_limit = _pick_float_from_mapping(
+                role_night_cfg,
+                (
+                    "max_consecutive_nights",
+                    "max_consecutive_night",
+                    "max_nights_consecutive",
+                    "max_consecutive",
+                ),
+            )
+            penalty_weight = _pick_float_from_mapping(
+                role_night_cfg,
+                (
+                    "penalty_extra_consecutive_night",
+                    "penalty_extra_night",
+                    "penalty_consecutive_night",
+                    "penalty_after_first_night",
+                ),
+            )
             if week_limit is None:
                 week_limit = _pick_float_from_mapping(
                     role_cfg,
@@ -770,7 +796,32 @@ def _extract_employee_night_params(
                         "max_per_month",
                     ),
                 )
-            role_limits[role_u] = {"week": week_limit, "month": month_limit}
+            if consecutive_limit is None:
+                consecutive_limit = _pick_float_from_mapping(
+                    role_cfg,
+                    (
+                        "max_consecutive_nights",
+                        "max_consecutive_night",
+                        "max_nights_consecutive",
+                        "max_consecutive",
+                    ),
+                )
+            if penalty_weight is None:
+                penalty_weight = _pick_float_from_mapping(
+                    role_cfg,
+                    (
+                        "penalty_extra_consecutive_night",
+                        "penalty_extra_night",
+                        "penalty_consecutive_night",
+                        "penalty_after_first_night",
+                    ),
+                )
+            role_limits[role_u] = {
+                "week": week_limit,
+                "month": month_limit,
+                "consecutive": consecutive_limit,
+                "penalty": penalty_weight,
+            }
 
     params: dict[int, dict[str, int | None]] = {}
     for _, row in employees.iterrows():
@@ -793,6 +844,18 @@ def _extract_employee_night_params(
             "max_night_month",
             "max_nights_per_month",
         ])
+        consecutive_limit = _pick_float(row, [
+            "max_consecutive_nights",
+            "max_consecutive_night",
+            "max_nights_consecutive",
+            "max_consecutive",
+        ])
+        penalty_weight = _pick_float(row, [
+            "penalty_extra_consecutive_night",
+            "penalty_extra_night",
+            "penalty_consecutive_night",
+            "penalty_after_first_night",
+        ])
 
         role_u = role_map.get(emp_idx, "")
         role_cfg = role_limits.get(role_u)
@@ -800,6 +863,10 @@ def _extract_employee_night_params(
             week_limit = role_cfg.get("week")
         if month_limit is None and role_cfg is not None:
             month_limit = role_cfg.get("month")
+        if consecutive_limit is None and role_cfg is not None:
+            consecutive_limit = role_cfg.get("consecutive")
+        if penalty_weight is None and role_cfg is not None:
+            penalty_weight = role_cfg.get("penalty")
 
         if week_limit is None:
             week_limit = _pick_float_from_mapping(
@@ -821,6 +888,26 @@ def _extract_employee_night_params(
                     "max_nights_month",
                 ),
             )
+        if consecutive_limit is None:
+            consecutive_limit = _pick_float_from_mapping(
+                default_night_cfg,
+                (
+                    "max_consecutive_nights",
+                    "max_consecutive_night",
+                    "max_nights_consecutive",
+                    "max_consecutive",
+                ),
+            )
+        if penalty_weight is None:
+            penalty_weight = _pick_float_from_mapping(
+                default_night_cfg,
+                (
+                    "penalty_extra_consecutive_night",
+                    "penalty_extra_night",
+                    "penalty_consecutive_night",
+                    "penalty_after_first_night",
+                ),
+            )
 
         if week_limit is None:
             week_limit = _pick_float_from_mapping(
@@ -840,6 +927,26 @@ def _extract_employee_night_params(
                     "max_month",
                     "max_month_nights",
                     "max_nights_month",
+                ),
+            )
+        if consecutive_limit is None:
+            consecutive_limit = _pick_float_from_mapping(
+                global_night_cfg,
+                (
+                    "max_consecutive_nights",
+                    "max_consecutive_night",
+                    "max_nights_consecutive",
+                    "max_consecutive",
+                ),
+            )
+        if penalty_weight is None:
+            penalty_weight = _pick_float_from_mapping(
+                global_night_cfg,
+                (
+                    "penalty_extra_consecutive_night",
+                    "penalty_extra_night",
+                    "penalty_consecutive_night",
+                    "penalty_after_first_night",
                 ),
             )
 
@@ -851,9 +958,19 @@ def _extract_employee_night_params(
         if month_limit is not None and pd.notna(month_limit):
             month_limit_int = max(int(round(float(month_limit))), 0)
 
+        consecutive_limit_int = None
+        if consecutive_limit is not None and pd.notna(consecutive_limit):
+            consecutive_limit_int = max(int(round(float(consecutive_limit))), 0)
+
+        penalty_value = None
+        if penalty_weight is not None and pd.notna(penalty_weight):
+            penalty_value = float(penalty_weight)
+
         params[emp_idx] = {
             "max_week_nights": week_limit_int,
             "max_month_nights": month_limit_int,
+            "max_consecutive_nights": consecutive_limit_int,
+            "penalty_extra_consecutive": penalty_value,
         }
 
     return params
@@ -967,6 +1084,85 @@ def _build_month_history_nights(
             count_value = 0
         result[(emp_idx, month_id)] = result.get((emp_idx, month_id), 0) + max(count_value, 0)
 
+    return result
+
+
+def _history_night_dates_by_employee(
+    history: pd.DataFrame | None,
+    night_codes: set[str],
+    eid_of: Mapping[str, int],
+    before_day: date | None = None,
+) -> dict[int, set[date]]:
+    if history is None or history.empty:
+        return {}
+
+    if "employee_id" not in history.columns:
+        return {}
+
+    shift_col = next(
+        (
+            col
+            for col in ("turno", "shift_code", "shift", "codice")
+            if col in history.columns
+        ),
+        None,
+    )
+    if shift_col is None:
+        return {}
+
+    date_col = next(
+        (
+            col
+            for col in ("data", "date", "giorno", "day")
+            if col in history.columns
+        ),
+        None,
+    )
+    if date_col is None:
+        return {}
+
+    work = history.loc[:, ["employee_id", shift_col, date_col]].copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work[shift_col] = work[shift_col].astype(str).str.strip().str.upper()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce").dt.date
+
+    mask = work[shift_col].isin({code.upper() for code in night_codes}) & work[date_col].notna()
+    if before_day is not None:
+        mask &= work[date_col] < before_day
+
+    result: dict[int, set[date]] = defaultdict(set)
+    for employee_id, day in work.loc[mask, ["employee_id", date_col]].itertuples(index=False):
+        emp_idx = eid_of.get(employee_id)
+        if emp_idx is None:
+            continue
+        result[emp_idx].add(day)
+    return result
+
+
+def _compute_initial_night_streaks(
+    history: pd.DataFrame | None,
+    eid_of: Mapping[str, int],
+    night_codes: set[str],
+    first_day: date | None,
+) -> dict[int, int]:
+    if first_day is None:
+        return {}
+
+    night_dates = _history_night_dates_by_employee(history, night_codes, eid_of, before_day=first_day)
+    if not night_dates:
+        return {}
+
+    result: dict[int, int] = {}
+    for emp_idx, dates in night_dates.items():
+        if not dates:
+            continue
+        cursor = first_day - timedelta(days=1)
+        streak = 0
+        while cursor in dates:
+            streak += 1
+            cursor -= timedelta(days=1)
+        if streak:
+            result[emp_idx] = streak
     return result
 
 
@@ -1235,13 +1431,20 @@ def _add_night_constraints(
     model: cp_model.CpModel,
     assign_vars: Dict[tuple[int, int], cp_model.IntVar],
     bundle: Mapping[str, object],
-) -> None:
+) -> dict[str, Mapping]:
+    result: dict[str, Mapping] = {
+        "night_by_day": {},
+        "extra_penalties": {},
+        "extra_totals": {},
+        "penalty_weights": {},
+    }
+
     if not assign_vars:
-        return
+        return result
 
     night_codes = _resolve_night_codes(context.cfg if isinstance(context.cfg, Mapping) else {})
     if not night_codes:
-        return
+        return result
 
     (
         week_by_date,
@@ -1254,18 +1457,19 @@ def _add_night_constraints(
     ) = _extract_calendar_maps(context, bundle)
 
     if not week_by_date and not month_by_date:
-        return
+        return result
 
     slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
     if not slot_date2:
-        return
+        return result
 
     slot_night_flags = _build_slot_night_flags(context, bundle, night_codes)
     if not slot_night_flags:
-        return
+        return result
 
     week_slots: dict[str, list[int]] = defaultdict(list)
     month_slots: dict[str, list[int]] = defaultdict(list)
+    day_slots: dict[int, list[int]] = defaultdict(list)
 
     for slot_idx, day_idx in slot_date2.items():
         if not slot_night_flags.get(slot_idx, False):
@@ -1276,10 +1480,11 @@ def _add_night_constraints(
         month_id = day_month_map.get(day_idx)
         if month_id is not None:
             month_slots[month_id].append(slot_idx)
+        day_slots[day_idx].append(slot_idx)
 
     employee_limits = _extract_employee_night_params(context, bundle)
     if not employee_limits:
-        return
+        return result
 
     eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
     month_history = _build_month_history_nights(bundle, eid_of)
@@ -1326,6 +1531,147 @@ def _add_night_constraints(
             if terms or history_count:
                 expr = sum(terms) if terms else 0
                 model.Add(expr + history_count <= limit)
+
+    prev_day_index = _build_previous_day_index(bundle)
+    date_of: Mapping[int, object] = bundle.get("date_of", {})  # type: ignore[assignment]
+    num_days = int(bundle.get("num_days", len(date_of)))
+    num_employees = int(bundle.get("num_employees", len(eid_of)))
+
+    if num_days <= 0 or num_employees <= 0:
+        return result
+
+    day_dates: list[date | None] = []
+    for day_idx in range(num_days):
+        day_dates.append(_parse_date_value(date_of.get(day_idx)))
+
+    first_day = next((day for day in day_dates if day is not None), None)
+    initial_history = _compute_initial_night_streaks(
+        context.history,
+        eid_of,
+        night_codes,
+        first_day,
+    )
+    history_dates_all = _history_night_dates_by_employee(context.history, night_codes, eid_of)
+    history_before_day: dict[tuple[int, int], int] = {}
+    history_night_flags: dict[tuple[int, int], bool] = {}
+    for emp_idx, dates in history_dates_all.items():
+        streak = 0
+        for day_idx in range(num_days):
+            history_before_day[(emp_idx, day_idx)] = streak
+            day_date = day_dates[day_idx]
+            if day_date is not None and day_date in dates:
+                history_night_flags[(emp_idx, day_idx)] = True
+                streak += 1
+            else:
+                history_night_flags[(emp_idx, day_idx)] = False
+                streak = 0
+
+    night_by_day: dict[tuple[int, int], cp_model.BoolVar] = {}
+    streak_vars: dict[tuple[int, int], cp_model.IntVar] = {}
+    extra_penalties: dict[tuple[int, int], cp_model.IntVar] = {}
+    penalty_totals: dict[int, cp_model.IntVar] = {}
+    penalty_weights: dict[int, float] = {}
+
+    for emp_idx in range(num_employees):
+        limits = employee_limits.get(emp_idx, {})
+        consecutive_limit = limits.get("max_consecutive_nights")
+        penalty_weight = limits.get("penalty_extra_consecutive")
+
+        history_streak = int(initial_history.get(emp_idx, 0))
+
+        has_restriction = (
+            (consecutive_limit is not None and consecutive_limit >= 0)
+            or (penalty_weight is not None)
+            or history_streak > 0
+        )
+
+        if not has_restriction:
+            continue
+
+        if penalty_weight is not None:
+            penalty_weights[emp_idx] = float(penalty_weight)
+
+        streak_upper = consecutive_limit if consecutive_limit is not None else num_days
+        if streak_upper is None or streak_upper < 0:
+            streak_upper = num_days
+        streak_upper = max(int(streak_upper), 0)
+        extra_upper = max(streak_upper - 1, 0)
+
+        extras_for_emp: list[cp_model.IntVar] = []
+
+        for day_idx in range(num_days):
+            night_var = model.NewBoolVar(f"is_night_e{emp_idx}_d{day_idx}")
+            night_by_day[(emp_idx, day_idx)] = night_var
+
+            slots_in_day = day_slots.get(day_idx, [])
+            assign_list = [
+                assign_vars[(emp_idx, slot_idx)]
+                for slot_idx in slots_in_day
+                if (emp_idx, slot_idx) in assign_vars
+            ]
+            if assign_list:
+                model.Add(sum(assign_list) >= night_var)
+                for var in assign_list:
+                    model.Add(var <= night_var)
+            else:
+                if history_night_flags.get((emp_idx, day_idx), False):
+                    model.Add(night_var == 1)
+                else:
+                    model.Add(night_var == 0)
+
+            streak_var = model.NewIntVar(
+                0,
+                streak_upper,
+                f"night_streak_e{emp_idx}_d{day_idx}",
+            )
+            streak_vars[(emp_idx, day_idx)] = streak_var
+
+            extra_var = model.NewIntVar(
+                0,
+                extra_upper,
+                f"night_extra_e{emp_idx}_d{day_idx}",
+            )
+            extra_penalties[(emp_idx, day_idx)] = extra_var
+            extras_for_emp.append(extra_var)
+
+            not_night = night_var.Not()
+            model.Add(streak_var == 0).OnlyEnforceIf(not_night)
+            model.Add(extra_var == 0).OnlyEnforceIf(not_night)
+
+            history_before = history_before_day.get((emp_idx, day_idx), 0)
+            history_is_night = history_night_flags.get((emp_idx, day_idx), False)
+
+            if history_is_night and not assign_list:
+                history_streak = history_before + 1
+                model.Add(streak_var == history_streak)
+                model.Add(extra_var == 0)
+                continue
+
+            prev_idx = prev_day_index.get(day_idx)
+            if prev_idx is None:
+                base_streak = max(history_before, 0)
+                model.Add(streak_var == base_streak + 1).OnlyEnforceIf(night_var)
+            else:
+                prev_streak = streak_vars.get((emp_idx, prev_idx))
+                if prev_streak is None:
+                    base_streak = max(history_before, 0)
+                    model.Add(streak_var == base_streak + 1).OnlyEnforceIf(night_var)
+                else:
+                    model.Add(streak_var == prev_streak + 1).OnlyEnforceIf(night_var)
+
+            model.Add(streak_var - extra_var == 1).OnlyEnforceIf(night_var)
+
+        if extras_for_emp:
+            bound = len(extras_for_emp) * max(extra_upper, 0)
+            total = model.NewIntVar(0, bound, f"night_extra_total_e{emp_idx}")
+            model.Add(total == sum(extras_for_emp))
+            penalty_totals[emp_idx] = total
+
+    result["night_by_day"] = night_by_day
+    result["extra_penalties"] = extra_penalties
+    result["extra_totals"] = penalty_totals
+    result["penalty_weights"] = penalty_weights
+    return result
 
 
 def _build_employee_role_map(employees: pd.DataFrame, bundle: Mapping[str, object]) -> dict[int, str]:
