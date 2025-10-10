@@ -66,6 +66,7 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_pre = _pick_frame(dfs, "preassignments", "preassignments_df")
     df_abs = _pick_frame(dfs, "absences", "leaves_days_df", "leaves_df")
     df_availability = _pick_frame(dfs, "availability", "availability_df")
+    df_role_requirements = _pick_frame(dfs, "groups_role_min_expanded")
 
     if df_employees is None or df_slots is None:
         raise ValueError("Mancano DataFrame essenziali: employees o shift_slots")
@@ -169,15 +170,21 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     if role_column not in df_employees.columns:
         raise ValueError("preprocessing: colonna ruolo mancante in df_employees")
 
-    slot_base = df_slots.loc[:, ["slot_id", "slot_id2", "reparto_id", "shift_code", "date", "is_night"]].copy()
+    slot_base = df_slots.loc[
+        :, ["slot_id", "slot_id2", "reparto_id", "shift_code", "coverage_code", "date", "is_night"]
+    ].copy()
     slot_base = slot_base.rename(columns={"reparto_id": "slot_reparto_id"})
     slot_base["slot_reparto_id"] = (
         slot_base["slot_reparto_id"].astype(str).str.strip().str.upper()
     )
     slot_base["shift_code"] = slot_base["shift_code"].astype(str).str.strip().str.upper()
+    slot_base["coverage_code"] = (
+        slot_base["coverage_code"].astype(str).str.strip().str.upper()
+    )
     slot_base["slot_date"] = pd.to_datetime(slot_base["date"]).dt.date
     slot_base["is_night"] = slot_base["is_night"].fillna(False).astype(bool)
 
+    allowed_roles = None
     if df_elig is not None and not df_elig.empty:
         allowed_roles = (
             df_elig.loc[df_elig["allowed"] == True, ["shift_code", "role"]]
@@ -187,16 +194,47 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             )
             .drop_duplicates()
         )
-        slot_role = slot_base.merge(allowed_roles, on="shift_code", how="inner")
-    else:
-        roles = _normalize_roles(df_employees[role_column])
-        slot_role = slot_base.assign(key=1).merge(
-            pd.DataFrame({"role": roles.unique(), "key": 1}),
-            on="key",
+
+    slot_role: pd.DataFrame
+    if df_role_requirements is not None and not df_role_requirements.empty:
+        role_req = df_role_requirements.loc[
+            :, ["data", "reparto_id", "shift_code", "coverage_code", "role"]
+        ].copy()
+        role_req["slot_date"] = pd.to_datetime(role_req["data"]).dt.date
+        role_req["reparto_id"] = role_req["reparto_id"].astype(str).str.strip().str.upper()
+        role_req["shift_code"] = role_req["shift_code"].astype(str).str.strip().str.upper()
+        role_req["coverage_code"] = role_req["coverage_code"].astype(str).str.strip().str.upper()
+        role_req["role"] = role_req["role"].astype(str).str.strip().str.upper()
+        role_req = role_req.drop_duplicates(
+            subset=["slot_date", "reparto_id", "shift_code", "coverage_code", "role"]
+        )
+
+        slot_role = slot_base.merge(
+            role_req,
+            left_on=["slot_date", "slot_reparto_id", "shift_code", "coverage_code"],
+            right_on=["slot_date", "reparto_id", "shift_code", "coverage_code"],
             how="inner",
-        ).drop(columns="key")
+        ).drop(columns=["reparto_id"])
+
+        if allowed_roles is not None and not allowed_roles.empty:
+            slot_role = slot_role.merge(
+                allowed_roles, on=["shift_code", "role"], how="inner"
+            )
+    else:
+        if allowed_roles is not None and not allowed_roles.empty:
+            slot_role = slot_base.merge(allowed_roles, on="shift_code", how="inner")
+        else:
+            roles = _normalize_roles(df_employees[role_column])
+            slot_role = slot_base.assign(key=1).merge(
+                pd.DataFrame({"role": roles.unique(), "key": 1}),
+                on="key",
+                how="inner",
+            ).drop(columns="key")
 
     slot_role["role"] = slot_role["role"].astype(str).str.strip().str.upper()
+    slot_role = slot_role.drop_duplicates(
+        subset=["slot_id", "slot_id2", "role"]
+    )
 
     emp_base = df_employees.loc[:, ["employee_id", "employee_id2", role_column, "reparto_id", "pool_id"]].copy()
     emp_base = emp_base.rename(columns={role_column: "role", "reparto_id": "employee_reparto_id"})
