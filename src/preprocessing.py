@@ -5,6 +5,146 @@ from datetime import date, timedelta
 import pandas as pd
 
 
+def _ensure_date(value: date | pd.Timestamp | str) -> date:
+    if isinstance(value, date) and not isinstance(value, pd.Timestamp):
+        return value
+    converted = pd.to_datetime(value)
+    if pd.isna(converted):
+        raise ValueError("Invalid date value provided")
+    return converted.date()
+
+
+def compute_month_progressive_balance(
+    employees_df: pd.DataFrame,
+    history_df: pd.DataFrame | None,
+    plan_df: pd.DataFrame | None,
+    month_start: date,
+    month_end: date,
+    horizon_start: date,
+    horizon_end: date,
+) -> pd.DataFrame:
+    """Compute the progressive month balance per employee.
+
+    Notes
+    -----
+    * ``start_balance`` is always the balance at the end of the previous
+      month, regardless of the horizon start day.
+    * When the planning horizon ends at the end of the month the
+      pro-rata computation is skipped and the full ``hours_due_month`` is
+      used instead.
+    """
+
+    required_columns = {"employee_id", "hours_due_month", "start_balance"}
+    missing_columns = required_columns.difference(employees_df.columns)
+    if missing_columns:
+        raise ValueError(
+            f"employees_df is missing required columns: {sorted(missing_columns)}"
+        )
+
+    month_start_d = _ensure_date(month_start)
+    month_end_d = _ensure_date(month_end)
+    horizon_start_d = _ensure_date(horizon_start)
+    horizon_end_d = _ensure_date(horizon_end)
+
+    if horizon_end_d < month_start_d or horizon_start_d > month_end_d:
+        raise ValueError("Horizon is outside the provided month range")
+    if horizon_start_d > horizon_end_d:
+        raise ValueError("horizon_start must be on or before horizon_end")
+
+    base = (
+        employees_df.loc[:, ["employee_id", "hours_due_month", "start_balance"]]
+        .copy()
+    )
+    base["employee_id"] = base["employee_id"].astype(str)
+    base["hours_due_month"] = pd.to_numeric(
+        base["hours_due_month"], errors="coerce"
+    ).fillna(0.0)
+    base["start_balance"] = pd.to_numeric(
+        base["start_balance"], errors="coerce"
+    ).fillna(0.0)
+
+    def _aggregate_hours(
+        df: pd.DataFrame | None,
+        value_column: str,
+        output_column: str,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame({"employee_id": [], output_column: []})
+        work = df.copy()
+        work["employee_id"] = work["employee_id"].astype(str)
+        if "date" not in work.columns:
+            raise ValueError("Expected 'date' column in dataframe")
+        if value_column not in work.columns:
+            raise ValueError(f"Expected '{value_column}' column in dataframe")
+        work_dates = pd.to_datetime(work["date"], errors="coerce").dt.date
+        mask = work_dates.ge(start) & work_dates.le(end)
+        if not mask.any():
+            return pd.DataFrame({"employee_id": [], output_column: []})
+        work = work.loc[mask]
+        work[value_column] = pd.to_numeric(work[value_column], errors="coerce").fillna(0.0)
+        aggregated = work.groupby("employee_id", as_index=False)[value_column].sum()
+        aggregated = aggregated.rename(columns={value_column: output_column})
+        return aggregated
+
+    hist_end = horizon_start_d - timedelta(days=1)
+    if horizon_start_d <= month_start_d:
+        hist_hours = pd.DataFrame({"employee_id": [], "hours_hist_to_hstart": []})
+    else:
+        hist_hours = _aggregate_hours(
+            history_df,
+            "hours_effective",
+            "hours_hist_to_hstart",
+            month_start_d,
+            hist_end,
+        )
+
+    plan_hours = _aggregate_hours(
+        plan_df,
+        "hours_planned",
+        "hours_plan_horizon",
+        horizon_start_d,
+        horizon_end_d,
+    )
+
+    result = base.merge(hist_hours, on="employee_id", how="left").merge(
+        plan_hours, on="employee_id", how="left"
+    )
+
+    result[["hours_hist_to_hstart", "hours_plan_horizon"]] = result[
+        ["hours_hist_to_hstart", "hours_plan_horizon"]
+    ].fillna(0.0)
+    result["hours_eff_to_date"] = (
+        result["hours_hist_to_hstart"] + result["hours_plan_horizon"]
+    )
+
+    if horizon_end_d == month_end_d:
+        result["hours_due_period"] = result["hours_due_month"]
+    else:
+        days_in_month = (month_end_d - month_start_d).days + 1
+        days_to_date = (horizon_end_d - month_start_d).days + 1
+        ratio = days_to_date / days_in_month
+        result["hours_due_period"] = result["hours_due_month"] * ratio
+
+    result["end_balance"] = (
+        result["start_balance"]
+        + (result["hours_eff_to_date"] - result["hours_due_period"])
+    )
+
+    columns = [
+        "employee_id",
+        "hours_hist_to_hstart",
+        "hours_plan_horizon",
+        "hours_eff_to_date",
+        "hours_due_period",
+        "start_balance",
+        "end_balance",
+    ]
+
+    return result[columns].sort_values("employee_id").reset_index(drop=True)
+
+
 def _normalize_roles(series: pd.Series) -> pd.Series:
     cleaned = (
         series.dropna()
