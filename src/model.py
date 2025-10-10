@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Mapping
 
 DUE_HOUR_OBJECTIVE_SCALE = 1000
+CONSECUTIVE_NIGHT_OBJECTIVE_SCALE = 1000
 
 import pandas as pd
 
@@ -250,6 +251,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     objective_terms.extend(
         _build_due_hour_objective_terms(context, bundle, hour_info["monthly_deviation"])
     )
+    objective_terms.extend(_build_consecutive_night_objective_terms(night_info))
 
     if objective_terms:
         model.Minimize(sum(objective_terms))
@@ -1548,6 +1550,24 @@ def _build_due_hour_objective_terms(
         terms.append(deviation_var * coeff)
 
     return terms
+
+
+def _build_consecutive_night_objective_terms(
+    night_info: Mapping[str, Any]
+) -> List[cp_model.LinearExpr]:
+    totals: Mapping[int, cp_model.IntVar] = night_info.get("extra_totals", {})  # type: ignore[assignment]
+    if not totals:
+        return []
+
+    weight = float(night_info.get("penalty_weight", 0.0) or 0.0)
+    if weight <= 0:
+        return []
+
+    coeff = int(round(weight * CONSECUTIVE_NIGHT_OBJECTIVE_SCALE))
+    if coeff <= 0:
+        coeff = 1
+
+    return [total * coeff for total in totals.values()]
 
 
 def _build_slot_night_flags(
