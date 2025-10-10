@@ -149,6 +149,18 @@ def test_load_employees_and_cross_policy_overrides() -> None:
     )
 
 
+def test_build_calendar_extends_to_month_start_for_partial_plans() -> None:
+    cal = build_calendar(date(2025, 11, 15), date(2025, 11, 20))
+    assert cal["data"].min() == "2025-11-01"
+    assert "2025-11-05" in cal["data"].tolist()
+
+
+def test_build_calendar_keeps_ten_day_history_when_month_starts_horizon() -> None:
+    cal = build_calendar(date(2025, 11, 1), date(2025, 11, 3))
+    assert cal["data"].min() == "2025-10-22"
+    assert "2025-10-22" in cal["data"].tolist()
+
+
 def test_resolve_fulltime_baseline_reads_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
 

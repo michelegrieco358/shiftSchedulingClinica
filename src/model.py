@@ -4,9 +4,24 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Dict, Iterable, Mapping
 
-from ortools.sat.python import cp_model
-
 import pandas as pd
+
+try:  # pragma: no cover - optional dependency guard
+    from ortools.sat.python import cp_model as _cp_model
+except ModuleNotFoundError as exc:  # pragma: no cover - fallback for tests without ortools
+    class _MissingCpModelModule:
+        _IMPORT_ERROR = exc
+
+        class CpModel:  # type: ignore[empty-body]
+            pass
+
+        class IntVar:  # type: ignore[empty-body]
+            pass
+
+    cp_model = _MissingCpModelModule()
+else:  # pragma: no cover - executed when ortools is available
+    cp_model = _cp_model
+    setattr(cp_model, "_IMPORT_ERROR", None)
 
 
 @dataclass(frozen=True)
@@ -52,6 +67,13 @@ class ModelArtifacts:
 
 def build_model(context: ModelContext) -> ModelArtifacts:
     """Istanzia il modello CP-SAT e crea le variabili base di assegnazione."""
+    import_error = getattr(cp_model, "_IMPORT_ERROR", None)
+    if import_error is not None:  # pragma: no cover - guard for environments without ortools
+        raise RuntimeError(
+            "ortools è richiesto per costruire il modello CP-SAT. "
+            "Installare il pacchetto 'ortools' per usare il solver."
+        ) from import_error
+
     model = cp_model.CpModel()
 
     bundle = context.bundle
