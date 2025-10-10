@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from calendar import monthrange
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -1071,6 +1072,80 @@ def _build_month_history_minutes(
     return result
 
 
+def _build_month_history_ranges(bundle: Mapping[str, object]) -> dict[str, tuple[date, date]]:
+    summary = bundle.get("history_month_to_date")
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        return {}
+
+    if not {"window_start_date", "window_end_date"}.issubset(summary.columns):
+        return {}
+
+    starts = pd.to_datetime(summary["window_start_date"], errors="coerce").dt.date
+    ends = pd.to_datetime(summary["window_end_date"], errors="coerce").dt.date
+
+    result: dict[str, tuple[date, date]] = {}
+    for start_date, end_date in zip(starts, ends, strict=False):
+        if pd.isna(start_date) or pd.isna(end_date):
+            continue
+        try:
+            month_id = f"{start_date:%Y-%m}"
+        except Exception:
+            continue
+        existing = result.get(month_id)
+        if existing is None:
+            result[month_id] = (start_date, end_date)
+        else:
+            result[month_id] = (min(existing[0], start_date), max(existing[1], end_date))
+
+    return result
+
+
+def _month_bounds_from_id(month_id: str) -> tuple[date, date] | None:
+    parts = month_id.split("-", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        year = int(parts[0])
+        month = int(parts[1])
+        last_day = monthrange(year, month)[1]
+    except Exception:
+        return None
+    return date(year, month, 1), date(year, month, last_day)
+
+
+def _should_enforce_month_due_hours(
+    month_id: str,
+    horizon_start: date | None,
+    horizon_end: date | None,
+    history_ranges: Mapping[str, tuple[date, date]],
+) -> bool:
+    bounds = _month_bounds_from_id(month_id)
+    if bounds is None:
+        return False
+
+    month_start, month_end = bounds
+
+    if horizon_end is None or horizon_end < month_end:
+        return False
+
+    if horizon_start is not None and horizon_start <= month_start:
+        return True
+
+    history_range = history_ranges.get(month_id)
+    if history_range is None:
+        return False
+
+    history_start, history_end = history_range
+    if history_start > month_start:
+        return False
+
+    if horizon_start is None or horizon_start > month_end:
+        return False
+
+    required_history_end = min(month_end, horizon_start - timedelta(days=1))
+    return history_end >= required_history_end
+
+
 def _build_month_history_nights(
     bundle: Mapping[str, object],
     eid_of: Mapping[str, int],
@@ -1314,7 +1389,7 @@ def _add_hour_constraints(
         day_week_map,
         day_month_map,
         horizon_start,
-        _horizon_end,
+        horizon_end,
         horizon_week_ids,
     ) = _extract_calendar_maps(context, bundle)
 
@@ -1344,6 +1419,7 @@ def _add_hour_constraints(
     eid_of: Mapping[str, int] = bundle["eid_of"]
     count_leaves = _absences_count_as_worked(context.cfg)
     month_history_minutes = _build_month_history_minutes(bundle, eid_of, count_leaves)
+    month_history_ranges = _build_month_history_ranges(bundle)
     week_history_minutes = _compute_history_minutes_by_week(
         context,
         week_by_date,
@@ -1378,7 +1454,16 @@ def _add_hour_constraints(
             ]
             expr = sum(terms) if terms else 0
 
+            enforce_due = False
             if due_minutes is not None:
+                enforce_due = _should_enforce_month_due_hours(
+                    month_id,
+                    horizon_start,
+                    horizon_end,
+                    month_history_ranges,
+                )
+
+            if enforce_due and due_minutes is not None:
                 bound = max(capacity + abs(history_minutes) + abs(due_minutes), 1)
                 balance = model.NewIntVar(
                     -bound,
