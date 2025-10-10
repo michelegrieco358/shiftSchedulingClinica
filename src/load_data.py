@@ -12,6 +12,9 @@ import yaml
 from loader import LoadedData, LoaderError as _CoreLoaderError, load_all as _core_load_all
 from loader.config import load_config as _core_load_config
 
+from .model import ModelContext, build_context_from_data
+from .preprocessing import build_all as _build_bundle
+
 
 class LoaderError(Exception):
     """High-level loader wrapper error."""
@@ -117,4 +120,22 @@ def load_all_data(
     if as_dict:
         return _to_dataframe_dict(loaded)
     return loaded
+
+
+def load_context(
+    cfg: Mapping[str, Any] | str | Path,
+    data_dir: str | Path,
+) -> tuple[ModelContext, dict[str, Any], Mapping[str, object]]:
+    """
+    Carica tutti i dati, esegue il preprocessing e costruisce un ModelContext pronto per il solver.
+    Restituisce (context, dataset_dict, bundle_preprocessing).
+    """
+    data = load_all_data(cfg, data_dir, as_dict=True)
+    cfg_dict = data.get("cfg")
+    if cfg_dict is None:
+        raise LoaderError("Il caricamento dati non ha restituito la configurazione 'cfg'.")
+
+    bundle = _build_bundle(data, cfg_dict)
+    context = build_context_from_data(data, bundle)
+    return context, data, bundle
 
