@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -70,6 +71,12 @@ class ModelArtifacts:
     consecutive_night_penalties: Dict[tuple[int, int], cp_model.IntVar]
     consecutive_night_penalty_totals: Dict[int, cp_model.IntVar]
     consecutive_night_penalty_weights: Mapping[int, float]
+    rest_violation_pairs: Dict[tuple[int, int, int], cp_model.BoolVar]
+    rest_violation_by_day: Dict[tuple[int, int], cp_model.BoolVar]
+    rest_violation_month_totals: Dict[tuple[int, str], cp_model.IntVar]
+    rest_violation_streaks: Dict[tuple[int, int], cp_model.IntVar]
+    rest_day_flags: Dict[tuple[int, int], cp_model.BoolVar]
+    weekly_rest_violations: Dict[tuple[int, int], cp_model.BoolVar]
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
@@ -233,6 +240,8 @@ def build_model(context: ModelContext) -> ModelArtifacts:
 
     hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
     night_info = _add_night_constraints(context, model, assign_vars, bundle)
+    rest_info = _add_rest_constraints(context, model, assign_vars, bundle)
+    rest_day_info = _add_rest_day_windows(context, model, state_vars, bundle, state_codes)
 
     return ModelArtifacts(
         model=model,
@@ -248,6 +257,12 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         consecutive_night_penalties=night_info["extra_penalties"],
         consecutive_night_penalty_totals=night_info["extra_totals"],
         consecutive_night_penalty_weights=night_info["penalty_weights"],
+        rest_violation_pairs=rest_info["pair_violations"],
+        rest_violation_by_day=rest_info["day_flags"],
+        rest_violation_month_totals=rest_info["monthly_totals"],
+        rest_violation_streaks=rest_info["streak_vars"],
+        rest_day_flags=rest_day_info["rest_day_flags"],
+        weekly_rest_violations=rest_day_info["weekly_violations"],
     )
 
 
@@ -1674,6 +1689,613 @@ def _add_night_constraints(
     return result
 
 
+def _resolve_rest_threshold(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+    rest_cfg = cfg.get("rest_rules") if isinstance(cfg.get("rest_rules"), Mapping) else None
+    if rest_cfg is None:
+        rest_cfg = {}
+    raw = rest_cfg.get("min_between_shifts_h", 0)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(value, 0.0)
+
+
+def _extract_rest11_limits(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, dict[str, int | None]]:
+    employees = context.employees
+    if employees is None or employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return {}
+
+    defaults = context.cfg.get("defaults") if isinstance(context.cfg, Mapping) else None
+    rest_defaults = defaults.get("rest11h") if isinstance(defaults, Mapping) else None
+
+    def _coerce_limit(value: Any) -> int | None:
+        if value is None or pd.isna(value):
+            return None
+        try:
+            num = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        return max(num, 0)
+
+    global_monthly = _coerce_limit(rest_defaults.get("max_monthly_exceptions")) if isinstance(rest_defaults, Mapping) else None
+    global_consecutive = _coerce_limit(rest_defaults.get("max_consecutive_exceptions")) if isinstance(rest_defaults, Mapping) else None
+
+    limits: dict[int, dict[str, int | None]] = {}
+    for row in employees.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        monthly = _coerce_limit(getattr(row, "rest11h_max_monthly_exceptions", None))
+        consecutive = _coerce_limit(getattr(row, "rest11h_max_consecutive_exceptions", None))
+
+        if monthly is None:
+            monthly = global_monthly
+        if consecutive is None:
+            consecutive = global_consecutive
+
+        limits[emp_idx] = {"monthly": monthly, "consecutive": consecutive}
+
+    return limits
+
+
+def _build_rest_history_counts(
+    bundle: Mapping[str, object], eid_of: Mapping[str, int]
+) -> dict[tuple[int, str], int]:
+    summary = bundle.get("history_month_to_date")
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        return {}
+    required = {"employee_id", "rest11_exceptions_count", "window_end_date"}
+    if not required.issubset(summary.columns):
+        return {}
+
+    result: dict[tuple[int, str], int] = {}
+    for row in summary.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        count = getattr(row, "rest11_exceptions_count", 0)
+        try:
+            count_val = int(round(float(count)))
+        except (TypeError, ValueError):
+            count_val = 0
+
+        end_date_raw = getattr(row, "window_end_date", None)
+        month_id = None
+        if end_date_raw is not None and not pd.isna(end_date_raw):
+            end_dt = pd.to_datetime(end_date_raw, errors="coerce")
+            if pd.notna(end_dt):
+                end_dt = end_dt.tz_localize(None) if getattr(end_dt, "tzinfo", None) else end_dt
+                end_dt = end_dt.normalize()
+                month_id = f"{end_dt:%Y-%m}"
+        if month_id is None:
+            continue
+
+        result[(emp_idx, month_id)] = result.get((emp_idx, month_id), 0) + max(count_val, 0)
+
+    return result
+
+
+def _add_rest_constraints(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    assign_vars: Dict[tuple[int, int], cp_model.IntVar],
+    bundle: Mapping[str, object],
+) -> dict[str, Mapping]:
+    result: dict[str, Mapping] = {
+        "pair_violations": {},
+        "day_flags": {},
+        "monthly_totals": {},
+        "streak_vars": {},
+    }
+
+    if not assign_vars:
+        return result
+
+    rest_threshold = _resolve_rest_threshold(context.cfg if isinstance(context.cfg, Mapping) else {})
+    if rest_threshold <= 0:
+        return result
+
+    gap_pairs = context.gap_pairs
+    if gap_pairs is None or gap_pairs.empty:
+        return result
+
+    if not {"s1_id", "s2_id", "gap_hours"}.issubset(gap_pairs.columns):
+        return result
+
+    sid_of: Mapping[int, int] = bundle.get("sid_of", {})  # type: ignore[assignment]
+    if not sid_of:
+        return result
+
+    slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
+    if not slot_date2:
+        return result
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    eligible_eids: Mapping[int, Iterable[int]] = bundle.get("eligible_eids", {})  # type: ignore[assignment]
+    if not eligible_eids:
+        return result
+
+    (
+        _,
+        _,
+        _,
+        day_month_map,
+        _,
+        _,
+        _,
+    ) = _extract_calendar_maps(context, bundle)
+
+    rest_limits = _extract_rest11_limits(context, bundle)
+
+    history_counts = _build_rest_history_counts(bundle, eid_of)
+
+    eligible_sets: dict[int, set[int]] = {}
+    for slot_idx, emp_iter in eligible_eids.items():
+        if isinstance(emp_iter, set):
+            eligible_sets[slot_idx] = emp_iter
+        else:
+            eligible_sets[slot_idx] = {int(emp) for emp in emp_iter}
+
+    pair_map: dict[tuple[int, int], list[cp_model.BoolVar]] = {}
+    month_pair_map: dict[tuple[int, str], list[cp_model.BoolVar]] = {}
+    pair_vars: dict[tuple[int, int, int], cp_model.BoolVar] = {}
+
+    work = gap_pairs.loc[:, ["s1_id", "s2_id", "gap_hours"]].copy()
+    work = work.dropna(subset=["s1_id", "s2_id", "gap_hours"])
+    if work.empty:
+        return result
+
+    work["gap_hours"] = pd.to_numeric(work["gap_hours"], errors="coerce")
+    work = work[pd.notna(work["gap_hours"])]
+    if work.empty:
+        return result
+
+    violation_pairs = work.loc[work["gap_hours"] < rest_threshold - 1e-6]
+    if violation_pairs.empty:
+        return result
+
+    for row in violation_pairs.itertuples(index=False):
+        try:
+            s1_id = int(getattr(row, "s1_id"))
+            s2_id = int(getattr(row, "s2_id"))
+        except Exception:
+            continue
+        s1_idx = sid_of.get(s1_id)
+        s2_idx = sid_of.get(s2_id)
+        if s1_idx is None or s2_idx is None:
+            continue
+
+        day_idx = slot_date2.get(s2_idx)
+        if day_idx is None:
+            continue
+        month_id = day_month_map.get(day_idx)
+
+        elig1 = eligible_sets.get(s1_idx, set())
+        elig2 = eligible_sets.get(s2_idx, set())
+        if not elig1 or not elig2:
+            continue
+        common = elig1 & elig2
+        if not common:
+            continue
+
+        for emp_idx in common:
+            assign1 = assign_vars.get((emp_idx, s1_idx))
+            assign2 = assign_vars.get((emp_idx, s2_idx))
+            if assign1 is None or assign2 is None:
+                continue
+
+            var = model.NewBoolVar(f"rest11_violation_e{emp_idx}_s{s1_idx}_s{s2_idx}")
+            model.Add(assign1 + assign2 - 1 <= var)
+            model.Add(var <= assign1)
+            model.Add(var <= assign2)
+
+            pair_vars[(emp_idx, s1_idx, s2_idx)] = var
+
+            day_key = (emp_idx, day_idx)
+            pair_map.setdefault(day_key, []).append(var)
+
+            if month_id is not None:
+                month_pair_map.setdefault((emp_idx, month_id), []).append(var)
+
+    num_employees = int(bundle.get("num_employees", len(eid_of)))
+    num_days = int(bundle.get("num_days", len(slot_date2)))
+
+    day_flags: dict[tuple[int, int], cp_model.BoolVar] = {}
+    for emp_idx in range(num_employees):
+        for day_idx in range(num_days):
+            pair_list = pair_map.get((emp_idx, day_idx), [])
+            day_var = model.NewBoolVar(f"rest11_violation_day_e{emp_idx}_d{day_idx}")
+            if pair_list:
+                for pair_var in pair_list:
+                    model.Add(pair_var <= day_var)
+                model.Add(day_var <= sum(pair_list))
+            else:
+                model.Add(day_var == 0)
+            day_flags[(emp_idx, day_idx)] = day_var
+
+    monthly_totals: dict[tuple[int, str], cp_model.IntVar] = {}
+    for (emp_idx, month_id), pair_list in month_pair_map.items():
+        limit = rest_limits.get(emp_idx, {}).get("monthly")
+        upper = len(pair_list)
+        total_var = model.NewIntVar(0, upper if upper > 0 else 0, f"rest11_month_total_e{emp_idx}_{month_id}")
+        if pair_list:
+            model.Add(total_var == sum(pair_list))
+        else:
+            model.Add(total_var == 0)
+        history_count = history_counts.get((emp_idx, month_id), 0)
+        if limit is not None:
+            model.Add(total_var + history_count <= limit)
+        monthly_totals[(emp_idx, month_id)] = total_var
+
+    # handle months with history but no future pairs
+    for (emp_idx, month_id), history_value in history_counts.items():
+        limit = rest_limits.get(emp_idx, {}).get("monthly")
+        if limit is None:
+            continue
+        if (emp_idx, month_id) in monthly_totals:
+            continue
+        total_var = model.NewIntVar(0, 0, f"rest11_month_total_e{emp_idx}_{month_id}")
+        model.Add(total_var == 0)
+        model.Add(total_var + history_value <= limit)
+        monthly_totals[(emp_idx, month_id)] = total_var
+
+    streak_vars: dict[tuple[int, int], cp_model.IntVar] = {}
+    for emp_idx in range(num_employees):
+        limits = rest_limits.get(emp_idx, {})
+        consecutive_limit = limits.get("consecutive")
+        if consecutive_limit is None:
+            continue
+        limit_int = max(int(consecutive_limit), 0)
+        streak_cap = max(limit_int, 1)
+
+        prev_streak: cp_model.IntVar | None = None
+        for day_idx in range(num_days):
+            day_var = day_flags[(emp_idx, day_idx)]
+            streak_var = model.NewIntVar(0, streak_cap, f"rest11_streak_e{emp_idx}_d{day_idx}")
+            model.Add(streak_var == 0).OnlyEnforceIf(day_var.Not())
+
+            if prev_streak is None:
+                model.Add(streak_var == 1).OnlyEnforceIf(day_var)
+            else:
+                model.Add(streak_var == prev_streak + 1).OnlyEnforceIf(day_var)
+
+            model.Add(streak_var <= limit_int)
+
+            streak_vars[(emp_idx, day_idx)] = streak_var
+            prev_streak = streak_var
+
+    result["pair_violations"] = pair_vars
+    result["day_flags"] = day_flags
+    result["monthly_totals"] = monthly_totals
+    result["streak_vars"] = streak_vars
+    return result
+
+
+def _extract_rest_day_limits(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> tuple[dict[int, dict[str, int]], int, int]:
+    defaults = context.cfg.get("defaults") if isinstance(context.cfg, Mapping) else {}
+
+    def _coerce(value: Any) -> int | None:
+        if value is None or pd.isna(value):
+            return None
+        try:
+            num = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        return max(num, 0)
+
+    weekly_default = _coerce(defaults.get("weekly_rest_min_days")) if isinstance(defaults, Mapping) else None
+    if weekly_default is None:
+        weekly_default = 0
+
+    biweekly_default = _coerce(defaults.get("biweekly_rest_min_days")) if isinstance(defaults, Mapping) else None
+    if biweekly_default is None:
+        biweekly_default = 0
+
+    limits: dict[int, dict[str, int]] = {}
+
+    employees = context.employees
+    if employees is None or employees.empty or "employee_id" not in employees.columns:
+        return limits, weekly_default, biweekly_default
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return limits, weekly_default, biweekly_default
+
+    week_cols = ("weekly_rest_min_days", "rest_week_min_days")
+    biweek_cols = ("biweekly_rest_min_days", "rest_2week_min_days")
+
+    for row in employees.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        weekly_val = None
+        for col in week_cols:
+            if hasattr(row, col):
+                weekly_val = _coerce(getattr(row, col))
+            if weekly_val is not None:
+                break
+
+        biweekly_val = None
+        for col in biweek_cols:
+            if hasattr(row, col):
+                biweekly_val = _coerce(getattr(row, col))
+            if biweekly_val is not None:
+                break
+
+        if weekly_val is None:
+            weekly_val = weekly_default
+        if biweekly_val is None:
+            biweekly_val = biweekly_default
+
+        limits[emp_idx] = {"weekly": int(weekly_val), "biweekly": int(biweekly_val)}
+
+    return limits, weekly_default, biweekly_default
+
+
+def _history_rest_dates_by_employee(
+    history: pd.DataFrame | None,
+    rest_codes: set[str],
+    eid_of: Mapping[str, int],
+    before_day: date | None = None,
+) -> dict[int, set[date]]:
+    if history is None or history.empty:
+        return {}
+
+    if "employee_id" not in history.columns:
+        return {}
+
+    shift_col = next(
+        (
+            col
+            for col in ("turno", "shift_code", "shift", "codice")
+            if col in history.columns
+        ),
+        None,
+    )
+    if shift_col is None:
+        return {}
+
+    date_col = next(
+        (
+            col
+            for col in ("data", "date", "giorno", "day")
+            if col in history.columns
+        ),
+        None,
+    )
+    if date_col is None:
+        return {}
+
+    work = history.loc[:, ["employee_id", shift_col, date_col]].copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work[shift_col] = work[shift_col].astype(str).str.strip().str.upper()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce").dt.date
+
+    codes = {code.upper() for code in rest_codes}
+    mask = work[shift_col].isin(codes) & work[date_col].notna()
+    if before_day is not None:
+        mask &= work[date_col] < before_day
+
+    result: dict[int, set[date]] = defaultdict(set)
+    for employee_id, day in work.loc[mask, ["employee_id", date_col]].itertuples(index=False):
+        emp_idx = eid_of.get(employee_id)
+        if emp_idx is None:
+            continue
+        result[emp_idx].add(day)
+    return result
+
+
+def _history_dates_by_employee(
+    history: pd.DataFrame | None,
+    eid_of: Mapping[str, int],
+    before_day: date | None = None,
+) -> dict[int, list[date]]:
+    if history is None or history.empty:
+        return {}
+
+    if "employee_id" not in history.columns:
+        return {}
+
+    date_col = next(
+        (
+            col
+            for col in ("data", "date", "giorno", "day")
+            if col in history.columns
+        ),
+        None,
+    )
+    if date_col is None:
+        return {}
+
+    work = history.loc[:, ["employee_id", date_col]].copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce").dt.date
+
+    if before_day is not None:
+        work = work.loc[work[date_col] < before_day]
+
+    result: dict[int, set[date]] = defaultdict(set)
+    for employee_id, day in work.itertuples(index=False):
+        if pd.isna(day):
+            continue
+        emp_idx = eid_of.get(employee_id)
+        if emp_idx is None:
+            continue
+        result[emp_idx].add(day)
+
+    return {emp_idx: sorted(days) for emp_idx, days in result.items()}
+
+
+def _count_history_dates(dates: list[date], start: date | None, end: date | None) -> int:
+    if not dates or start is None or end is None:
+        return 0
+    left = bisect_left(dates, start)
+    right = bisect_right(dates, end)
+    return max(right - left, 0)
+
+
+def _add_rest_day_windows(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    state_vars: Dict[tuple[int, int, str], cp_model.IntVar],
+    bundle: Mapping[str, object],
+    state_codes: Iterable[str],
+) -> dict[str, Mapping]:
+    result: dict[str, Mapping] = {
+        "rest_day_flags": {},
+        "weekly_violations": {},
+    }
+
+    rest_codes = tuple(code for code in state_codes if code.upper() in {"R", "F"})
+    if not rest_codes:
+        return result
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    did_of: Mapping[object, int] = bundle.get("did_of", {})  # type: ignore[assignment]
+    date_of: Mapping[int, object] = bundle.get("date_of", {})  # type: ignore[assignment]
+
+    num_employees = int(bundle.get("num_employees", len(eid_of)))
+    num_days = int(bundle.get("num_days", len(did_of)))
+
+    if num_employees <= 0 or num_days <= 0:
+        return result
+
+    day_dates: list[date | None] = [
+        _parse_date_value(date_of.get(day_idx)) for day_idx in range(num_days)
+    ]
+
+    horizon_cfg = context.cfg.get("horizon") if isinstance(context.cfg, Mapping) else None
+    planning_start = (
+        _parse_date_value(horizon_cfg.get("start_date"))
+        if isinstance(horizon_cfg, Mapping)
+        else None
+    )
+    if planning_start is None:
+        planning_start = next((day for day in day_dates if day is not None), None)
+
+    origin_idx = 0
+    if planning_start is not None:
+        for idx, current_day in enumerate(day_dates):
+            if current_day == planning_start:
+                origin_idx = idx
+                break
+
+    rest_limits, weekly_default, biweekly_default = _extract_rest_day_limits(context, bundle)
+
+    history_sets = _history_rest_dates_by_employee(
+        context.history, set(rest_codes), eid_of, before_day=planning_start
+    )
+    history_dates = {emp_idx: sorted(days) for emp_idx, days in history_sets.items()}
+    history_coverage = _history_dates_by_employee(
+        context.history, eid_of, before_day=planning_start
+    )
+
+    rest_day_vars: dict[tuple[int, int], cp_model.BoolVar] = {}
+    for emp_idx in range(num_employees):
+        for day_idx in range(num_days):
+            var = model.NewBoolVar(f"is_rest_e{emp_idx}_d{day_idx}")
+            rest_day_vars[(emp_idx, day_idx)] = var
+            terms = [
+                state_vars[(emp_idx, day_idx, code)]
+                for code in rest_codes
+                if (emp_idx, day_idx, code) in state_vars
+            ]
+            if terms:
+                model.Add(var == sum(terms))
+            else:
+                model.Add(var == 0)
+
+    weekly_window = 7
+    biweekly_window = 14
+
+    weekly_vars: dict[tuple[int, int], cp_model.BoolVar] = {}
+
+    for emp_idx in range(num_employees):
+        limits = rest_limits.get(emp_idx, {})
+        weekly_req = limits.get("weekly", weekly_default) if limits else weekly_default
+        biweekly_req = limits.get("biweekly", biweekly_default) if limits else biweekly_default
+
+        weekly_req = max(int(weekly_req), 0)
+        biweekly_req = max(int(biweekly_req), 0)
+
+        history_list = history_dates.get(emp_idx, [])
+        history_days = history_coverage.get(emp_idx, [])
+
+        for end_idx in range(origin_idx, num_days):
+            end_date = day_dates[end_idx]
+
+            if weekly_req > 0:
+                raw_start = end_idx - weekly_window + 1
+                missing_days = max(0, origin_idx - raw_start)
+                window_start_idx = max(raw_start, origin_idx)
+                window_terms = [
+                    rest_day_vars[(emp_idx, idx)]
+                    for idx in range(max(window_start_idx, 0), end_idx + 1)
+                ]
+                history_count = 0
+                if missing_days > 0 and end_date is not None:
+                    start_date = end_date - timedelta(days=weekly_window - 1)
+                    history_count = _count_history_dates(history_list, start_date, end_date)
+                rest_sum = sum(window_terms) if window_terms else 0
+
+                violation = model.NewBoolVar(f"weekly_rest_violation_e{emp_idx}_d{end_idx}")
+                model.Add(rest_sum + history_count >= weekly_req).OnlyEnforceIf(violation.Not())
+                model.Add(rest_sum + history_count <= weekly_req - 1).OnlyEnforceIf(violation)
+                weekly_vars[(emp_idx, end_idx)] = violation
+
+            if biweekly_req > 0:
+                raw_start = end_idx - biweekly_window + 1
+                missing_days = max(0, origin_idx - raw_start)
+                window_start_idx = max(raw_start, origin_idx)
+                window_terms = [
+                    rest_day_vars[(emp_idx, idx)]
+                    for idx in range(max(window_start_idx, 0), end_idx + 1)
+                ]
+                history_count = 0
+                if end_date is None:
+                    continue
+
+                start_date = end_date - timedelta(days=biweekly_window - 1)
+                coverage_days = len(window_terms)
+
+                if missing_days > 0:
+                    history_count = _count_history_dates(history_list, start_date, end_date)
+                    coverage_from_history = _count_history_dates(
+                        history_days, start_date, end_date
+                    )
+                    coverage_days += min(coverage_from_history, missing_days)
+
+                if coverage_days < biweekly_window:
+                    continue
+                rest_sum = sum(window_terms) if window_terms else 0
+                model.Add(rest_sum + history_count >= biweekly_req)
+
+    result["rest_day_flags"] = rest_day_vars
+    result["weekly_violations"] = weekly_vars
+    return result
 def _build_employee_role_map(employees: pd.DataFrame, bundle: Mapping[str, object]) -> dict[int, str]:
     """Restituisce la mappa emp_idx -> ruolo (uppercase)."""
     role_col = next((col for col in ("role", "ruolo") if col in employees.columns), None)
