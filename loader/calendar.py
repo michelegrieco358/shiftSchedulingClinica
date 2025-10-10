@@ -10,9 +10,12 @@ def build_calendar(
     start_date: date, end_date: date, holidays_df: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:
     prev_week_start = start_date - timedelta(days=(start_date.isoweekday() - 1))
-    six_days_before = start_date - timedelta(days=6)
-    cal_start_base = min(prev_week_start, six_days_before)
-    cal_start = cal_start_base - timedelta(days=4)
+    month_start = start_date.replace(day=1)
+    history_anchor = start_date - timedelta(days=10)
+    # Cover both the initial portion of the calendar month and at least the
+    # preceding ten days of history required for rest-related checks.
+    extended_anchor = min(month_start, history_anchor)
+    cal_start = min(prev_week_start, extended_anchor)
     rows = []
     d = cal_start
     while d <= end_date:
