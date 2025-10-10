@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Dict, Iterable, Mapping
 
 from ortools.sat.python import cp_model
@@ -99,6 +100,107 @@ def build_model(context: ModelContext) -> ModelArtifacts:
             var = state_vars.get((emp_idx, day_idx, absence_state))
             if var is not None:
                 model.Add(var == 1)
+
+    slot_date2 = bundle.get("slot_date2")
+    if slot_date2 is None:
+        slot_date2 = {}
+        if not context.slots.empty and "date" in context.slots.columns:
+            for row in context.slots.loc[:, ["slot_id", "date"]].itertuples(index=False):
+                slot_idx = sid_of.get(getattr(row, "slot_id"))
+                if slot_idx is None:
+                    continue
+                day_raw = getattr(row, "date")
+                day = pd.to_datetime(day_raw, errors="coerce")
+                if pd.isna(day):
+                    continue
+                day_idx = did_of.get(day.date())
+                if day_idx is not None:
+                    slot_date2[slot_idx] = day_idx
+
+    slot_shiftcode_map: Dict[int, str] = {}
+    if not context.slots.empty and "shift_code" in context.slots.columns:
+        shift_series = (
+            context.slots["shift_code"].astype(str).str.strip().str.upper()
+        )
+        for slot_id, shift_code in zip(context.slots["slot_id"], shift_series, strict=False):
+            slot_idx = sid_of.get(slot_id)
+            if slot_idx is not None:
+                slot_shiftcode_map[slot_idx] = shift_code
+
+    slots_by_day: Dict[int, list[int]] = {}
+    slots_by_day_state: Dict[tuple[int, str], list[int]] = {}
+    for slot_idx, day_idx in slot_date2.items():
+        slots_by_day.setdefault(day_idx, []).append(slot_idx)
+        shift_code = slot_shiftcode_map.get(slot_idx)
+        if shift_code:
+            slots_by_day_state.setdefault((day_idx, shift_code), []).append(slot_idx)
+
+    shift_states = {state for state in ("M", "P", "N") if state in state_codes}
+    for emp_idx in range(num_employees):
+        for day_idx in range(num_days):
+            for state in shift_states:
+                state_var = state_vars[(emp_idx, day_idx, state)]
+                slot_indices = slots_by_day_state.get((day_idx, state), [])
+                assign_list = [
+                    assign_vars[(emp_idx, slot_idx)]
+                    for slot_idx in slot_indices
+                    if (emp_idx, slot_idx) in assign_vars
+                ]
+                if not assign_list:
+                    model.Add(state_var == 0)
+                    continue
+                model.Add(sum(assign_list) >= state_var)
+                for var in assign_list:
+                    model.Add(var <= state_var)
+
+    sn_code = "SN" if "SN" in state_codes else None
+    prev_day_index = _build_previous_day_index(bundle)
+    history_prev_night = _collect_prev_night_pairs(context.history, eid_of, did_of)
+
+    restricted_after_night = tuple(
+        state for state in ("R", "M", "F") if state in state_codes
+    )
+
+    if sn_code is not None:
+        for emp_idx in range(num_employees):
+            for day_idx in range(num_days):
+                sn_var = state_vars[(emp_idx, day_idx, sn_code)]
+
+                day_assignments = [
+                    assign_vars[(emp_idx, slot_idx)]
+                    for slot_idx in slots_by_day.get(day_idx, [])
+                    if (emp_idx, slot_idx) in assign_vars
+                ]
+                for var in day_assignments:
+                    model.Add(var <= 1 - sn_var)
+
+                prev_idx = prev_day_index.get(day_idx)
+                if prev_idx is not None:
+                    prev_n_var = state_vars.get((emp_idx, prev_idx, "N"))
+                    if prev_n_var is None:
+                        model.Add(sn_var == 0)
+                    else:
+                        model.Add(sn_var <= prev_n_var)
+                else:
+                    if (emp_idx, day_idx) not in history_prev_night:
+                        model.Add(sn_var == 0)
+
+    if restricted_after_night:
+        for emp_idx in range(num_employees):
+            for day_idx in range(num_days):
+                prev_idx = prev_day_index.get(day_idx)
+
+                if prev_idx is not None:
+                    prev_n_var = state_vars.get((emp_idx, prev_idx, "N"))
+                    if prev_n_var is None:
+                        continue
+                    for state in restricted_after_night:
+                        state_var = state_vars[(emp_idx, day_idx, state)]
+                        model.Add(state_var + prev_n_var <= 1)
+                elif (emp_idx, day_idx) in history_prev_night:
+                    for state in restricted_after_night:
+                        state_var = state_vars[(emp_idx, day_idx, state)]
+                        model.Add(state_var == 0)
 
     return ModelArtifacts(
         model=model,
@@ -239,6 +341,57 @@ def _collect_absence_pairs(
         emp_idx = eid_of.get(employee_id)
         day_idx = did_of.get(day)
         if emp_idx is not None and day_idx is not None:
+            result.add((emp_idx, day_idx))
+    return result
+
+
+def _build_previous_day_index(bundle: Mapping[str, object]) -> Dict[int, int | None]:
+    """Restituisce la mappa day_idx -> day_idx del giorno precedente (se esiste)."""
+
+    date_of: Mapping[int, object] = bundle.get("date_of", {})  # type: ignore[assignment]
+    did_of: Mapping[object, int] = bundle.get("did_of", {})  # type: ignore[assignment]
+
+    prev_map: Dict[int, int | None] = {}
+    for day_idx, raw_date in date_of.items():
+        day = pd.to_datetime(raw_date, errors="coerce")
+        if pd.isna(day):
+            prev_map[day_idx] = None
+            continue
+        prev_date = (day - timedelta(days=1)).date()
+        prev_map[day_idx] = did_of.get(prev_date)
+    return prev_map
+
+
+def _collect_prev_night_pairs(
+    history: pd.DataFrame | None,
+    eid_of: Mapping[str, int],
+    did_of: Mapping[object, int],
+) -> set[tuple[int, int]]:
+    """Restituisce le coppie (emp_idx, day_idx) con notte il giorno precedente (da history)."""
+
+    if history is None or history.empty:
+        return set()
+    required = {"employee_id", "turno", "data"}
+    if not required.issubset(history.columns):
+        return set()
+
+    work = history.loc[:, ["employee_id", "turno", "data"]].copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work["turno"] = work["turno"].astype(str).str.strip().str.upper()
+    work["data"] = pd.to_datetime(work["data"], errors="coerce").dt.date
+
+    mask = work["turno"].eq("N") & work["data"].notna()
+    if not mask.any():
+        return set()
+
+    result: set[tuple[int, int]] = set()
+    for employee_id, day in work.loc[mask, ["employee_id", "data"]].itertuples(index=False):
+        emp_idx = eid_of.get(employee_id)
+        if emp_idx is None:
+            continue
+        next_day = day + timedelta(days=1)
+        day_idx = did_of.get(next_day)
+        if day_idx is not None:
             result.add((emp_idx, day_idx))
     return result
 
