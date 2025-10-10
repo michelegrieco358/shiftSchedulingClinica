@@ -7,7 +7,12 @@ import pytest
 from loader.calendar import build_calendar
 from ortools.sat.python import cp_model
 
-from src.model import DUE_HOUR_OBJECTIVE_SCALE, ModelContext, build_model
+from src.model import (
+    CROSS_ASSIGNMENT_OBJECTIVE_SCALE,
+    DUE_HOUR_OBJECTIVE_SCALE,
+    ModelContext,
+    build_model,
+)
 
 
 SUMMARY_COLUMNS = [
@@ -59,6 +64,9 @@ def _make_context(
     due_weight: float | None = None,
     full_day_hours_by_role: dict[str, float] | None = None,
     fallback_daily_hours: float = 7.5,
+    cross_weight: float | None = None,
+    employee_reparto: str = "HOME",
+    slot_reparti: list[str] | None = None,
 ) -> ModelContext:
     employees_dict: dict[str, list] = {
         "employee_id": ["E1"],
@@ -67,11 +75,15 @@ def _make_context(
     }
     employees_dict["max_week_hours_h"] = [max_week_hours]
     employees_dict["max_month_hours_h"] = [max_month_hours]
+    employees_dict["reparto_id"] = [employee_reparto]
     employees = pd.DataFrame(employees_dict)
 
     slot_ids = list(range(1, len(slot_specs) + 1))
     slot_dates = [pd.to_datetime(day).date() for day, _ in slot_specs]
     durations = [minutes for _, minutes in slot_specs]
+
+    if slot_reparti is None:
+        slot_reparti = [employee_reparto] * len(slot_specs)
 
     slots = pd.DataFrame(
         {
@@ -79,6 +91,7 @@ def _make_context(
             "shift_code": ["M"] * len(slot_ids),
             "date": slot_dates,
             "duration_min": durations,
+            "reparto_id": slot_reparti,
         }
     )
 
@@ -102,6 +115,11 @@ def _make_context(
 
     slot_date2 = {sid_of[slot_id]: did_of[slot_date] for slot_id, slot_date in zip(slot_ids, slot_dates, strict=False)}
     slot_duration_min = {slot_id: duration for slot_id, duration in zip(slot_ids, durations, strict=False)}
+    slot_reparto = {
+        slot_id: str(reparto).strip().upper()
+        for slot_id, reparto in zip(slot_ids, slot_reparti, strict=False)
+        if str(reparto).strip()
+    }
 
     eligible_eids = {sid_of[slot_id]: [0] for slot_id in slot_ids}
 
@@ -134,6 +152,8 @@ def _make_context(
         },
         "defaults": defaults_cfg,
     }
+    if cross_weight is not None:
+        cfg["cross"] = {"penalty_weight": cross_weight}
 
     empty_df = pd.DataFrame()
 
@@ -151,6 +171,7 @@ def _make_context(
         "slot_date2": slot_date2,
         "slot_duration_min": slot_duration_min,
         "history_month_to_date": summary_df,
+        "slot_reparto": slot_reparto,
     }
 
     return ModelContext(
@@ -373,3 +394,27 @@ def test_due_hour_objective_prefers_matching_due_hours() -> None:
         (3.0 / (7.5 * 60.0)) * DUE_HOUR_OBJECTIVE_SCALE
     ))
     assert coeff_value == expected_coeff
+
+
+def test_cross_assignment_penalty_counts_cross_slots() -> None:
+    cross_weight = 2.5
+    context = _make_context(
+        slot_specs=[("2025-01-06", 480)],
+        due_hours=0,
+        horizon_start=date(2025, 1, 6),
+        horizon_end=date(2025, 1, 6),
+        cross_weight=cross_weight,
+        employee_reparto="HOME",
+        slot_reparti=["OTHER"],
+    )
+
+    artifacts = build_model(context)
+    artifacts.model.Add(artifacts.assign_vars[(0, 0)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(artifacts.model)
+
+    assert status == cp_model.OPTIMAL
+
+    expected = int(round(cross_weight * CROSS_ASSIGNMENT_OBJECTIVE_SCALE))
+    assert solver.ObjectiveValue() == pytest.approx(expected)
