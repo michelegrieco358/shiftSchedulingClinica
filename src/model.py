@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, Iterable, Mapping
 
-from ortools.sat.python import cp_model
-
 import pandas as pd
+
+try:  # pragma: no cover - optional dependency guard
+    from ortools.sat.python import cp_model as _cp_model
+except ModuleNotFoundError as exc:  # pragma: no cover - fallback for tests without ortools
+    class _MissingCpModelModule:
+        _IMPORT_ERROR = exc
+
+        class CpModel:  # type: ignore[empty-body]
+            pass
+
+        class IntVar:  # type: ignore[empty-body]
+            pass
+
+    cp_model = _MissingCpModelModule()
+else:  # pragma: no cover - executed when ortools is available
+    cp_model = _cp_model
+    setattr(cp_model, "_IMPORT_ERROR", None)
 
 
 @dataclass(frozen=True)
@@ -48,10 +64,19 @@ class ModelArtifacts:
     slot_index: Mapping[int, int]
     day_index: Mapping[object, int]
     state_codes: tuple[str, ...]
+    monthly_hour_balance: Dict[tuple[int, str], cp_model.IntVar]
+    monthly_hour_deviation: Dict[tuple[int, str], cp_model.IntVar]
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
     """Istanzia il modello CP-SAT e crea le variabili base di assegnazione."""
+    import_error = getattr(cp_model, "_IMPORT_ERROR", None)
+    if import_error is not None:  # pragma: no cover - guard for environments without ortools
+        raise RuntimeError(
+            "ortools è richiesto per costruire il modello CP-SAT. "
+            "Installare il pacchetto 'ortools' per usare il solver."
+        ) from import_error
+
     model = cp_model.CpModel()
 
     bundle = context.bundle
@@ -202,6 +227,8 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                         state_var = state_vars[(emp_idx, day_idx, state)]
                         model.Add(state_var == 0)
 
+    hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
+
     return ModelArtifacts(
         model=model,
         assign_vars=assign_vars,
@@ -210,6 +237,8 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         slot_index=sid_of,
         day_index=did_of,
         state_codes=state_codes,
+        monthly_hour_balance=hour_info["monthly_balance"],
+        monthly_hour_deviation=hour_info["monthly_deviation"],
     )
 
 
@@ -394,6 +423,492 @@ def _collect_prev_night_pairs(
         if day_idx is not None:
             result.add((emp_idx, day_idx))
     return result
+
+
+def _parse_date_value(value: Any) -> date | None:
+    """Converte un generico valore data in ``datetime.date``."""
+
+    if isinstance(value, date):
+        return value
+    if value is None:
+        return None
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(dt):
+        return None
+    if isinstance(dt, pd.Timestamp):
+        if dt.tz is not None:
+            dt = dt.tz_convert(None)
+        return dt.normalize().date()
+    try:
+        return pd.Timestamp(dt).normalize().date()
+    except Exception:
+        return None
+
+
+def _absences_count_as_worked(cfg: Mapping[str, Any] | None) -> bool:
+    """Restituisce True se le assenze valgono come ore lavorate."""
+
+    if not isinstance(cfg, Mapping):
+        return True
+    defaults = cfg.get("defaults")
+    if not isinstance(defaults, Mapping):
+        return True
+    abs_cfg = defaults.get("absences")
+    if not isinstance(abs_cfg, Mapping):
+        return True
+    value = abs_cfg.get("count_as_worked_hours")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return True
+        return text in {"true", "1", "yes", "y", "si"}
+    if value is None:
+        return True
+    try:
+        return bool(value)
+    except Exception:
+        return True
+
+
+def _extract_calendar_maps(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> tuple[
+    dict[date, str],
+    dict[date, str],
+    dict[int, str],
+    dict[int, str],
+    date | None,
+    date | None,
+    set[str],
+]:
+    """Deriva mappe giorno->settimana/mese e le date dell'orizzonte."""
+
+    calendars = context.calendars
+    if calendars is None or calendars.empty or "data" not in calendars.columns:
+        return {}, {}, {}, {}, None, None, set()
+
+    work = calendars.copy()
+    data_dt = pd.to_datetime(work["data"], errors="coerce")
+    work = work.assign(_data_dt=data_dt).dropna(subset=["_data_dt"])
+    work["_data_dt"] = work["_data_dt"].dt.tz_localize(None)
+    work["_data_dt"] = work["_data_dt"].dt.normalize()
+    work["data"] = work["_data_dt"].dt.date
+    work = work.drop_duplicates(subset=["data"], keep="last")
+
+    horizon_cfg = context.cfg.get("horizon") if isinstance(context.cfg, Mapping) else None
+    horizon_start = _parse_date_value(horizon_cfg.get("start_date")) if isinstance(horizon_cfg, Mapping) else None
+    horizon_end = _parse_date_value(horizon_cfg.get("end_date")) if isinstance(horizon_cfg, Mapping) else None
+
+    if "is_in_horizon" in work.columns:
+        horizon_mask = work["is_in_horizon"].astype(bool)
+    elif horizon_start is not None and horizon_end is not None:
+        horizon_mask = work["data"].apply(lambda d: horizon_start <= d <= horizon_end)
+    elif horizon_start is not None:
+        horizon_mask = work["data"].apply(lambda d: d >= horizon_start)
+    else:
+        horizon_mask = pd.Series(True, index=work.index)
+
+    horizon_days = work.loc[horizon_mask, "data"]
+    if horizon_start is None and not horizon_days.empty:
+        horizon_start = horizon_days.min()
+    if horizon_end is None and not horizon_days.empty:
+        horizon_end = horizon_days.max()
+    if horizon_start is None and not work.empty:
+        horizon_start = work["data"].min()
+    if horizon_end is None and not work.empty:
+        horizon_end = work["data"].max()
+
+    if "week_start_date" in work.columns:
+        week_start_norm = work["week_start_date"].apply(_parse_date_value)
+    else:
+        week_start_norm = (work["_data_dt"] - pd.to_timedelta(work["_data_dt"].dt.dayofweek, unit="D")).dt.date
+    work["week_start_norm"] = week_start_norm
+
+    if "week_id" in work.columns:
+        week_id_series = work["week_id"].astype(str).str.strip()
+    else:
+        week_id_series = pd.Series("", index=work.index)
+    fallback_week_id = work["week_start_norm"].apply(lambda d: d.isoformat() if isinstance(d, date) else "")
+    week_id_series = week_id_series.where(week_id_series != "", fallback_week_id)
+    work["week_id_norm"] = week_id_series
+
+    work["month_id_norm"] = work["data"].apply(lambda d: f"{d:%Y-%m}" if isinstance(d, date) else "")
+
+    week_by_date: dict[date, str] = {}
+    month_by_date: dict[date, str] = {}
+    for row in work.itertuples(index=False):
+        day = getattr(row, "data")
+        week_id = getattr(row, "week_id_norm", "")
+        month_id = getattr(row, "month_id_norm", "")
+        if isinstance(day, date):
+            if week_id:
+                week_by_date[day] = str(week_id)
+            if month_id:
+                month_by_date[day] = str(month_id)
+
+    did_of: Mapping[object, int] = bundle.get("did_of", {})  # type: ignore[assignment]
+    day_week_map: dict[int, str] = {}
+    day_month_map: dict[int, str] = {}
+    for raw_day, idx in did_of.items():
+        day = _parse_date_value(raw_day)
+        if day is None:
+            continue
+        week_id = week_by_date.get(day)
+        month_id = month_by_date.get(day)
+        if week_id is not None:
+            day_week_map[idx] = week_id
+        if month_id is not None:
+            day_month_map[idx] = month_id
+
+    horizon_week_ids = {week_by_date.get(day) for day in horizon_days if day in week_by_date}
+    horizon_week_ids = {str(week_id) for week_id in horizon_week_ids if week_id}
+
+    return week_by_date, month_by_date, day_week_map, day_month_map, horizon_start, horizon_end, horizon_week_ids
+
+
+def _pick_float(row: pd.Series, columns: Iterable[str]) -> float | None:
+    for col in columns:
+        if col in row.index:
+            value = row[col]
+            if pd.isna(value):
+                continue
+            text = str(value).strip()
+            if not text or text.upper() == "NAN":
+                continue
+            try:
+                return float(value)
+            except Exception:
+                try:
+                    return float(text.replace(",", "."))
+                except Exception:
+                    continue
+    return None
+
+
+def _extract_employee_hour_params(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, dict[str, int | None]]:
+    employees = context.employees
+    if employees is None or employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    eid_of: Mapping[str, int] = bundle["eid_of"]
+    role_col = next((col for col in ("role", "ruolo") if col in employees.columns), None)
+    roles = (
+        employees[role_col].astype(str).str.strip().str.upper()
+        if role_col is not None
+        else pd.Series("", index=employees.index)
+    )
+
+    defaults = context.cfg.get("defaults") if isinstance(context.cfg, Mapping) else None
+    contract_cfg = (
+        defaults.get("contract_hours_by_role_h")
+        if isinstance(defaults, Mapping)
+        else None
+    )
+    contract_by_role = {}
+    if isinstance(contract_cfg, Mapping):
+        contract_by_role = {
+            str(role).strip().upper(): float(value)
+            for role, value in contract_cfg.items()
+            if str(role).strip() and pd.notna(value)
+        }
+
+    params: dict[int, dict[str, int | None]] = {}
+    for row_idx, row in employees.iterrows():
+        emp_id = str(row["employee_id"]).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+        role_u = roles.iloc[row_idx] if row_idx in roles.index else ""
+
+        due_hours = _pick_float(row, [
+            "ore_dovute_mese_h",
+            "ore_dovute_h",
+            "contract_hours_h",
+            "contract_hours_month_h",
+        ])
+        if due_hours is None and role_u and role_u in contract_by_role:
+            due_hours = contract_by_role[role_u]
+
+        max_week_hours = _pick_float(row, [
+            "max_week_hours_h",
+            "max_week_hour_h",
+            "week_hours_cap_h",
+        ])
+        max_month_hours = _pick_float(row, [
+            "max_month_hours_h",
+            "max_month_hour_h",
+            "month_hours_cap_h",
+        ])
+
+        params[emp_idx] = {
+            "due_minutes": int(round(due_hours * 60)) if due_hours is not None else None,
+            "max_week_minutes": int(round(max_week_hours * 60)) if max_week_hours is not None else None,
+            "max_month_minutes": int(round(max_month_hours * 60)) if max_month_hours is not None else None,
+        }
+
+    return params
+
+
+def _build_slot_duration_minutes(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, int]:
+    sid_of: Mapping[int, int] = bundle.get("sid_of", {})  # type: ignore[assignment]
+    duration_map: dict[int, int] = {}
+
+    raw_durations = bundle.get("slot_duration_min")
+    if isinstance(raw_durations, Mapping):
+        for slot_id, minutes in raw_durations.items():
+            try:
+                slot_int = int(slot_id)
+            except Exception:
+                continue
+            slot_idx = sid_of.get(slot_int)
+            if slot_idx is None:
+                continue
+            try:
+                value = int(round(float(minutes)))
+            except Exception:
+                value = 0
+            duration_map[slot_idx] = max(value, 0)
+
+    if len(duration_map) < len(sid_of):
+        if {
+            "slot_id",
+            "duration_min",
+        }.issubset(context.slots.columns):
+            for row in context.slots.loc[:, ["slot_id", "duration_min"]].itertuples(index=False):
+                slot_idx = sid_of.get(int(getattr(row, "slot_id")))
+                if slot_idx is None or slot_idx in duration_map:
+                    continue
+                try:
+                    value = int(round(float(getattr(row, "duration_min"))))
+                except Exception:
+                    value = 0
+                duration_map[slot_idx] = max(value, 0)
+        else:
+            for slot_id in context.slots.get("slot_id", []):
+                slot_idx = sid_of.get(int(slot_id))
+                if slot_idx is not None and slot_idx not in duration_map:
+                    duration_map[slot_idx] = 0
+
+    return duration_map
+
+
+def _build_month_history_minutes(
+    bundle: Mapping[str, object],
+    eid_of: Mapping[str, int],
+    count_leaves: bool,
+) -> dict[tuple[int, str], int]:
+    summary = bundle.get("history_month_to_date")
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        return {}
+
+    value_col = "hours_with_leaves_h" if count_leaves and "hours_with_leaves_h" in summary.columns else "hours_worked_h"
+    if value_col not in summary.columns:
+        return {}
+
+    result: dict[tuple[int, str], int] = {}
+    for row in summary.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+        month_start = _parse_date_value(getattr(row, "window_start_date", None))
+        if month_start is None:
+            continue
+        month_id = f"{month_start:%Y-%m}"
+        try:
+            hours_value = float(getattr(row, value_col))
+        except Exception:
+            hours_value = 0.0
+        minutes = int(round(hours_value * 60))
+        result[(emp_idx, month_id)] = result.get((emp_idx, month_id), 0) + max(minutes, 0)
+
+    return result
+
+
+def _compute_history_minutes_by_week(
+    context: ModelContext,
+    week_by_date: Mapping[date, str],
+    horizon_start: date | None,
+    horizon_week_ids: set[str],
+    count_leaves: bool,
+    eid_of: Mapping[str, int],
+) -> dict[tuple[int, str], int]:
+    if not week_by_date or not horizon_week_ids:
+        return {}
+
+    result: dict[tuple[int, str], int] = {}
+
+    def accumulate(df: pd.DataFrame | None, duration_col: str) -> None:
+        if df is None or df.empty or duration_col not in df.columns or "employee_id" not in df.columns:
+            return
+        work = df.copy()
+
+        day_series = None
+        for col in ("data_dt", "date_dt", "giorno_dt", "day_dt"):
+            if col in work.columns:
+                day_series = pd.to_datetime(work[col], errors="coerce").dt.date
+                break
+        if day_series is None:
+            for col in ("data", "date", "giorno", "day"):
+                if col in work.columns:
+                    day_series = pd.to_datetime(work[col], errors="coerce").dt.date
+                    break
+        if day_series is None:
+            return
+
+        work = work.assign(_day=day_series).dropna(subset=["_day"])
+        if horizon_start is not None:
+            work = work[work["_day"] < horizon_start]
+        if work.empty:
+            return
+
+        work["week_id"] = work["_day"].map(week_by_date)
+        work = work[work["week_id"].isin(horizon_week_ids)]
+        if work.empty:
+            return
+
+        minutes = pd.to_numeric(work[duration_col], errors="coerce").fillna(0.0)
+        work = work.assign(_minutes=minutes)
+
+        grouped = work.groupby(["employee_id", "week_id"])["_minutes"].sum()
+        for (emp_id, week_id), total in grouped.items():
+            emp_idx = eid_of.get(str(emp_id).strip())
+            if emp_idx is None:
+                continue
+            result[(emp_idx, str(week_id))] = result.get((emp_idx, str(week_id)), 0) + int(round(float(total)))
+
+    accumulate(context.history, "shift_duration_min")
+    if count_leaves:
+        accumulate(context.leaves, "shift_duration_min")
+
+    return result
+
+
+def _add_hour_constraints(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    assign_vars: Dict[tuple[int, int], cp_model.IntVar],
+    bundle: Mapping[str, object],
+) -> dict[str, dict[tuple[int, str], cp_model.IntVar]]:
+    if not assign_vars:
+        return {"monthly_balance": {}, "monthly_deviation": {}}
+
+    (
+        week_by_date,
+        month_by_date,
+        day_week_map,
+        day_month_map,
+        horizon_start,
+        _horizon_end,
+        horizon_week_ids,
+    ) = _extract_calendar_maps(context, bundle)
+
+    slot_duration_map = _build_slot_duration_minutes(context, bundle)
+    if not slot_duration_map:
+        return {"monthly_balance": {}, "monthly_deviation": {}}
+
+    slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
+    week_slots: dict[str, list[int]] = defaultdict(list)
+    month_slots: dict[str, list[int]] = defaultdict(list)
+    month_capacity: dict[str, int] = defaultdict(int)
+
+    for slot_idx, day_idx in slot_date2.items():
+        duration = int(slot_duration_map.get(slot_idx, 0))
+        week_id = day_week_map.get(day_idx)
+        if week_id is not None:
+            week_slots[week_id].append(slot_idx)
+        day_month = day_month_map.get(day_idx)
+        if day_month is not None:
+            month_slots[day_month].append(slot_idx)
+            month_capacity[day_month] += max(duration, 0)
+
+    employee_params = _extract_employee_hour_params(context, bundle)
+    if not employee_params:
+        return {"monthly_balance": {}, "monthly_deviation": {}}
+
+    eid_of: Mapping[str, int] = bundle["eid_of"]
+    count_leaves = _absences_count_as_worked(context.cfg)
+    month_history_minutes = _build_month_history_minutes(bundle, eid_of, count_leaves)
+    week_history_minutes = _compute_history_minutes_by_week(
+        context,
+        week_by_date,
+        horizon_start,
+        horizon_week_ids,
+        count_leaves,
+        eid_of,
+    )
+
+    for _, month_id in month_history_minutes.keys():
+        if month_id not in month_slots:
+            month_slots[month_id] = []
+            month_capacity.setdefault(month_id, 0)
+
+    monthly_balance_vars: dict[tuple[int, str], cp_model.IntVar] = {}
+    monthly_dev_vars: dict[tuple[int, str], cp_model.IntVar] = {}
+
+    for month_id, slots_in_month in month_slots.items():
+        capacity = month_capacity.get(month_id, 0)
+        for emp_idx, params in employee_params.items():
+            due_minutes = params.get("due_minutes")
+            month_limit = params.get("max_month_minutes")
+            history_minutes = month_history_minutes.get((emp_idx, month_id), 0)
+
+            if due_minutes is None and month_limit is None and history_minutes == 0 and not slots_in_month:
+                continue
+
+            terms = [
+                assign_vars[(emp_idx, slot_idx)] * int(slot_duration_map.get(slot_idx, 0))
+                for slot_idx in slots_in_month
+                if (emp_idx, slot_idx) in assign_vars and slot_duration_map.get(slot_idx, 0) > 0
+            ]
+            expr = sum(terms) if terms else 0
+
+            if due_minutes is not None:
+                bound = max(capacity + abs(history_minutes) + abs(due_minutes), 1)
+                balance = model.NewIntVar(
+                    -bound,
+                    bound,
+                    f"month_balance_e{emp_idx}_m{month_id}",
+                )
+                deviation = model.NewIntVar(
+                    0,
+                    bound,
+                    f"month_deviation_e{emp_idx}_m{month_id}",
+                )
+                model.Add(balance == expr + history_minutes - due_minutes)
+                model.AddAbsEquality(deviation, balance)
+                monthly_balance_vars[(emp_idx, month_id)] = balance
+                monthly_dev_vars[(emp_idx, month_id)] = deviation
+
+            if month_limit is not None:
+                model.Add(expr + history_minutes <= month_limit)
+
+    for week_id, slots_in_week in week_slots.items():
+        for emp_idx, params in employee_params.items():
+            limit = params.get("max_week_minutes")
+            if limit is None:
+                continue
+            history_minutes = week_history_minutes.get((emp_idx, week_id), 0)
+            terms = [
+                assign_vars[(emp_idx, slot_idx)] * int(slot_duration_map.get(slot_idx, 0))
+                for slot_idx in slots_in_week
+                if (emp_idx, slot_idx) in assign_vars and slot_duration_map.get(slot_idx, 0) > 0
+            ]
+            expr = sum(terms) if terms else 0
+            model.Add(expr + history_minutes <= limit)
+
+    return {"monthly_balance": monthly_balance_vars, "monthly_deviation": monthly_dev_vars}
 
 
 def _build_employee_role_map(employees: pd.DataFrame, bundle: Mapping[str, object]) -> dict[int, str]:

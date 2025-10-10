@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pandas as pd
 
 
@@ -54,6 +56,208 @@ def _pick_frame(store: dict, *keys: str) -> pd.DataFrame | None:
     return None
 
 
+def _parse_horizon_start(cfg: dict) -> date | None:
+    horizon = cfg.get("horizon") if isinstance(cfg, dict) else None
+    if not isinstance(horizon, dict):
+        return None
+    start_raw = horizon.get("start_date")
+    if not start_raw:
+        return None
+    try:
+        return pd.to_datetime(start_raw).date()
+    except Exception:
+        return None
+
+
+def _resolve_rest_threshold(cfg: dict) -> float:
+    rest_cfg = cfg.get("rest_rules") if isinstance(cfg, dict) else None
+    if not isinstance(rest_cfg, dict):
+        rest_cfg = {}
+    value = rest_cfg.get("min_between_shifts_h", 11)
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return 11.0
+    return max(threshold, 0.0)
+
+
+def _build_month_to_date_summary(
+    cfg: dict,
+    employees: pd.DataFrame,
+    history: pd.DataFrame | None,
+    leaves_days: pd.DataFrame | None,
+) -> pd.DataFrame:
+    columns = [
+        "employee_id",
+        "window_start_date",
+        "window_end_date",
+        "hours_worked_h",
+        "absence_hours_h",
+        "hours_with_leaves_h",
+        "night_shifts_count",
+        "rest11_exceptions_count",
+    ]
+
+    horizon_start = _parse_horizon_start(cfg)
+    if horizon_start is None or horizon_start.day == 1:
+        return pd.DataFrame(columns=columns)
+
+    month_start = horizon_start.replace(day=1)
+    window_end = horizon_start - timedelta(days=1)
+    if window_end < month_start:
+        return pd.DataFrame(columns=columns)
+
+    if employees is None or employees.empty:
+        return pd.DataFrame(columns=columns)
+
+    employee_ids = (
+        employees["employee_id"].astype(str).str.strip().replace({"": pd.NA}).dropna().unique()
+    )
+    employee_ids = sorted(employee_ids.tolist())
+    if not employee_ids:
+        return pd.DataFrame(columns=columns)
+
+    night_codes = set()
+    shift_types = cfg.get("shift_types") if isinstance(cfg, dict) else None
+    if isinstance(shift_types, dict):
+        raw_codes = shift_types.get("night_codes", [])
+        night_codes = {
+            str(code).strip().upper()
+            for code in raw_codes
+            if isinstance(code, (str, int, float)) and str(code).strip()
+        }
+
+    history_window = pd.DataFrame()
+    if history is not None and not history.empty:
+        if {"employee_id", "shift_duration_min"}.issubset(history.columns):
+            hist = history.copy()
+            if "data_dt" in hist.columns:
+                hist_dates = pd.to_datetime(hist["data_dt"], errors="coerce").dt.date
+            elif "data" in hist.columns:
+                hist_dates = pd.to_datetime(hist["data"], errors="coerce").dt.date
+            else:
+                hist_dates = pd.Series(pd.NaT, index=hist.index)
+
+            hist["_day"] = hist_dates
+            mask = hist["_day"].ge(month_start) & hist["_day"].lt(horizon_start)
+            history_window = hist.loc[mask].copy()
+
+    if history_window.empty:
+        history_window = pd.DataFrame(columns=["employee_id", "shift_duration_min", "turno"])
+
+    if "employee_id" not in history_window.columns:
+        history_window["employee_id"] = pd.Series(index=history_window.index, dtype=str)
+    history_window["employee_id"] = history_window["employee_id"].astype(str).str.strip()
+
+    if "shift_duration_min" not in history_window.columns:
+        history_window["shift_duration_min"] = 0.0
+    history_window["shift_duration_min"] = pd.to_numeric(
+        history_window["shift_duration_min"], errors="coerce"
+    ).fillna(0.0)
+
+    if "turno" not in history_window.columns:
+        history_window["turno"] = pd.Series(index=history_window.index, dtype=str)
+    history_window["turno"] = (
+        history_window["turno"].astype(str).str.strip().str.upper()
+    )
+
+    worked_minutes = (
+        history_window.groupby("employee_id")["shift_duration_min"].sum()
+        if not history_window.empty
+        else pd.Series(dtype=float)
+    )
+    worked_hours = (worked_minutes / 60.0).to_dict()
+
+    night_counts = {}
+    if night_codes and not history_window.empty and "turno" in history_window.columns:
+        night_counts = (
+            history_window.loc[history_window["turno"].isin(night_codes)]
+            .groupby("employee_id")["turno"]
+            .count()
+            .to_dict()
+        )
+
+    rest_threshold = _resolve_rest_threshold(cfg)
+    rest_counts: dict[str, int] = {}
+    if rest_threshold > 0 and not history_window.empty:
+        required_cols = {"shift_start_dt", "shift_end_dt"}
+        if required_cols.issubset(history_window.columns):
+            working = history_window.loc[history_window["shift_duration_min"] > 0].copy()
+            working = working.dropna(subset=list(required_cols))
+            if not working.empty:
+                working["shift_start_dt"] = pd.to_datetime(
+                    working["shift_start_dt"], errors="coerce"
+                )
+                working["shift_end_dt"] = pd.to_datetime(
+                    working["shift_end_dt"], errors="coerce"
+                )
+                working = working.dropna(subset=list(required_cols))
+                working = working.sort_values(["employee_id", "shift_start_dt"])
+                for emp_id, grp in working.groupby("employee_id"):
+                    prev_end = None
+                    count = 0
+                    for row in grp.itertuples():
+                        start = row.shift_start_dt
+                        end = row.shift_end_dt
+                        if pd.isna(start) or pd.isna(end):
+                            continue
+                        if prev_end is not None:
+                            rest_hours = (start - prev_end).total_seconds() / 3600.0
+                            if rest_hours < rest_threshold:
+                                count += 1
+                        prev_end = end
+                    rest_counts[emp_id] = count
+
+    absence_hours = {}
+    if leaves_days is not None and not leaves_days.empty:
+        if "employee_id" in leaves_days.columns and "absence_hours_h" in leaves_days.columns:
+            leaves = leaves_days.copy()
+            if "data_dt" in leaves.columns:
+                leave_dates = pd.to_datetime(leaves["data_dt"], errors="coerce").dt.date
+            elif "data" in leaves.columns:
+                leave_dates = pd.to_datetime(leaves["data"], errors="coerce").dt.date
+            else:
+                leave_dates = pd.Series(pd.NaT, index=leaves.index)
+
+            leaves["_day"] = leave_dates
+            mask = leaves["_day"].ge(month_start) & leaves["_day"].lt(horizon_start)
+            filtered = leaves.loc[mask].copy()
+            if not filtered.empty:
+                if "is_absent" in filtered.columns:
+                    is_abs = filtered["is_absent"]
+                    if str(is_abs.dtype) == "boolean":
+                        mask_abs = is_abs.fillna(False)
+                    else:
+                        mask_abs = (
+                            is_abs.astype(str)
+                            .str.strip()
+                            .str.lower()
+                            .isin({"true", "1", "t", "yes", "y"})
+                        )
+                    filtered = filtered[mask_abs]
+                filtered["absence_hours_h"] = pd.to_numeric(
+                    filtered["absence_hours_h"], errors="coerce"
+                ).fillna(0.0)
+                absence_hours = (
+                    filtered.groupby("employee_id")["absence_hours_h"].sum().to_dict()
+                )
+
+    summary = pd.DataFrame({"employee_id": employee_ids})
+    summary["window_start_date"] = pd.to_datetime(month_start)
+    summary["window_end_date"] = pd.to_datetime(window_end)
+    summary["hours_worked_h"] = summary["employee_id"].map(worked_hours).fillna(0.0)
+    summary["absence_hours_h"] = summary["employee_id"].map(absence_hours).fillna(0.0)
+    summary["hours_with_leaves_h"] = summary["hours_worked_h"] + summary["absence_hours_h"]
+    summary["night_shifts_count"] = (
+        summary["employee_id"].map(night_counts).fillna(0).astype(int)
+    )
+    summary["rest11_exceptions_count"] = (
+        summary["employee_id"].map(rest_counts).fillna(0).astype(int)
+    )
+
+    return summary[columns]
+
+
 def build_all(dfs: dict, cfg: dict) -> dict:
     """Crea dizionari e strutture dati derivate dai DataFrame principali."""
     bundle = {}
@@ -67,6 +271,8 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_abs = _pick_frame(dfs, "absences", "leaves_days_df", "leaves_df")
     df_availability = _pick_frame(dfs, "availability", "availability_df")
     df_role_requirements = _pick_frame(dfs, "groups_role_min_expanded")
+    df_history = _pick_frame(dfs, "history", "history_df")
+    df_leaves_days = _pick_frame(dfs, "leaves_days", "leaves_days_df")
 
     if df_employees is None or df_slots is None:
         raise ValueError("Mancano DataFrame essenziali: employees o shift_slots")
@@ -346,6 +552,11 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             "eligible_eids": eligible_eids,
         }
     )
+
+    bundle["history_month_to_date"] = _build_month_to_date_summary(
+        cfg, df_employees, df_history, df_leaves_days
+    )
+
     # (4) Altri set utili (assenze, festivi, ecc.)
 
     return bundle
