@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 
 
@@ -143,6 +144,94 @@ def compute_month_progressive_balance(
     ]
 
     return result[columns].sort_values("employee_id").reset_index(drop=True)
+
+
+def compute_adaptive_coefficients(
+    balances: pd.Series | pd.DataFrame,
+    p_low: float = 0.10,
+    p_high: float = 0.90,
+    abs_min: float = -60.0,
+    abs_max: float = 60.0,
+    min_range: float = 10.0,
+) -> pd.DataFrame:
+    """Return adaptive coefficients for under/over-hour penalties.
+
+    Parameters
+    ----------
+    balances:
+        A series indexed by ``employee_id`` containing the starting balance
+        (in hours, measured at the end of the previous month). A DataFrame
+        with columns ``employee_id`` and ``start_balance`` is also accepted.
+    p_low, p_high:
+        Percentiles used to derive a robust operating range before clamping.
+    abs_min, abs_max:
+        Safety clamps applied after percentile extraction.
+    min_range:
+        Minimum desired range width in hours. When the percentile window is
+        narrower the range is expanded symmetrically around the median.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame indexed by ``employee_id`` with the columns ``c_under`` and
+        ``c_over`` containing values in the interval ``[1, 2]``.
+    """
+
+    if isinstance(balances, pd.DataFrame):
+        required_cols = {"employee_id", "start_balance"}
+        missing = required_cols.difference(balances.columns)
+        if missing:
+            raise ValueError(
+                "balances dataframe is missing required columns: "
+                f"{sorted(missing)}"
+            )
+        index = balances["employee_id"].astype(str).str.strip()
+        values = pd.to_numeric(balances["start_balance"], errors="coerce")
+        series = pd.Series(values.to_numpy(), index=index)
+    else:
+        series = pd.Series(dtype=float) if balances is None else balances.copy()
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series)
+        if series.index.name != "employee_id":
+            series.index = series.index.astype(str)
+        series.index = series.index.map(lambda x: str(x).strip())
+        series = pd.to_numeric(series, errors="coerce")
+
+    if series.empty:
+        return pd.DataFrame(columns=["c_under", "c_over"], index=series.index)
+
+    values = series.fillna(0.0).to_numpy(dtype=float)
+
+    if np.allclose(values, values[0]):
+        coeffs = pd.DataFrame(1.5, index=series.index, columns=["c_under", "c_over"])
+        return coeffs
+
+    q_low = float(np.nanquantile(values, p_low))
+    q_high = float(np.nanquantile(values, p_high))
+
+    if q_high - q_low < min_range:
+        median = float(np.nanmedian(values))
+        half_range = max(min_range / 2.0, 0.0)
+        q_low = median - half_range
+        q_high = median + half_range
+
+    q_low = max(q_low, abs_min)
+    q_high = min(q_high, abs_max)
+    if q_high <= q_low:
+        q_high = q_low + 1.0
+
+    clamped = np.clip(values, q_low, q_high)
+    scale = q_high - q_low
+    scaled = (clamped - q_low) / scale
+    scaled = np.clip(scaled, 0.0, 1.0)
+
+    c_under = 1.0 + scaled
+    c_over = 2.0 - scaled
+
+    coeffs = pd.DataFrame(
+        {"c_under": c_under, "c_over": c_over}, index=series.index
+    )
+    return coeffs
 
 
 def _normalize_roles(series: pd.Series) -> pd.Series:
