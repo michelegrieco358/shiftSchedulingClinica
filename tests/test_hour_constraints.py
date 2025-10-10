@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 from loader.calendar import build_calendar
 from ortools.sat.python import cp_model
 
-from src.model import ModelContext, build_model
+from src.model import DUE_HOUR_OBJECTIVE_SCALE, ModelContext, build_model
 
 
 SUMMARY_COLUMNS = [
@@ -21,12 +22,21 @@ SUMMARY_COLUMNS = [
 ]
 
 
-def _make_history_summary(hours_with_leaves: float, month_start: str) -> pd.DataFrame:
+def _make_history_summary(
+    hours_with_leaves: float,
+    month_start: str,
+    *,
+    window_days: int = 15,
+) -> pd.DataFrame:
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
     return pd.DataFrame(
         {
             "employee_id": ["E1"],
             "window_start_date": [pd.Timestamp(month_start)],
-            "window_end_date": [pd.Timestamp(month_start) + pd.Timedelta(days=13)],
+            "window_end_date": [
+                pd.Timestamp(month_start) + pd.Timedelta(days=window_days - 1)
+            ],
             "hours_worked_h": [hours_with_leaves],
             "absence_hours_h": [0.0],
             "hours_with_leaves_h": [hours_with_leaves],
@@ -46,6 +56,9 @@ def _make_context(
     max_month_hours: float | None = None,
     history_entries: list[tuple[str, int]] | None = None,
     history_summary: pd.DataFrame | None = None,
+    due_weight: float | None = None,
+    full_day_hours_by_role: dict[str, float] | None = None,
+    fallback_daily_hours: float = 7.5,
 ) -> ModelContext:
     employees_dict: dict[str, list] = {
         "employee_id": ["E1"],
@@ -101,15 +114,25 @@ def _make_context(
 
     summary_df = history_summary if history_summary is not None else pd.DataFrame(columns=SUMMARY_COLUMNS)
 
+    absences_cfg: dict[str, object] = {"count_as_worked_hours": True}
+    if full_day_hours_by_role is not None:
+        absences_cfg["full_day_hours_by_role_h"] = full_day_hours_by_role
+    if fallback_daily_hours is not None:
+        absences_cfg["fallback_contract_daily_avg_h"] = fallback_daily_hours
+
+    defaults_cfg: dict[str, object] = {
+        "contract_hours_by_role_h": {"INFERMIERE": due_hours},
+        "absences": absences_cfg,
+    }
+    if due_weight is not None:
+        defaults_cfg["balance"] = {"due_hours_penalty_weight": due_weight}
+
     cfg = {
         "horizon": {
             "start_date": horizon_start.isoformat(),
             "end_date": horizon_end.isoformat(),
         },
-        "defaults": {
-            "contract_hours_by_role_h": {"INFERMIERE": due_hours},
-            "absences": {"count_as_worked_hours": True},
-        },
+        "defaults": defaults_cfg,
     }
 
     empty_df = pd.DataFrame()
@@ -213,8 +236,8 @@ def test_monthly_due_slack_reflects_difference() -> None:
     context = _make_context(
         slot_specs=[("2025-01-02", 180), ("2025-01-03", 120)],
         due_hours=10,
-        horizon_start=date(2025, 1, 2),
-        horizon_end=date(2025, 1, 3),
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
     )
 
     artifacts = build_model(context)
@@ -226,6 +249,7 @@ def test_monthly_due_slack_reflects_difference() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
+    assert artifacts.monthly_hour_deviation
     key = next(iter(artifacts.monthly_hour_deviation.keys()))
     deviation = artifacts.monthly_hour_deviation[key]
     balance = artifacts.monthly_hour_balance[key]
@@ -240,7 +264,7 @@ def test_monthly_due_includes_history_summary() -> None:
         slot_specs=[("2025-01-16", 240), ("2025-01-17", 240)],
         due_hours=20,
         horizon_start=date(2025, 1, 16),
-        horizon_end=date(2025, 1, 17),
+        horizon_end=date(2025, 1, 31),
         history_summary=summary,
     )
 
@@ -253,6 +277,7 @@ def test_monthly_due_includes_history_summary() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
+    assert artifacts.monthly_hour_deviation
     key = next(iter(artifacts.monthly_hour_deviation.keys()))
     deviation = artifacts.monthly_hour_deviation[key]
     balance = artifacts.monthly_hour_balance[key]
@@ -260,3 +285,91 @@ def test_monthly_due_includes_history_summary() -> None:
     # History contributes 360 minutes, plan 480 minutes => deficit 360 minutes
     assert solver.Value(deviation) == 360
     assert solver.Value(balance) == -360
+
+
+def test_monthly_due_skipped_for_partial_month_without_history() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-05", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 15),
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
+
+
+def test_monthly_due_skipped_when_history_missing_for_early_gap() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-20", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 16),
+        horizon_end=date(2025, 1, 31),
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
+
+
+def test_monthly_due_skipped_when_history_not_long_enough() -> None:
+    summary = _make_history_summary(
+        hours_with_leaves=5.0,
+        month_start="2025-01-01",
+        window_days=10,
+    )
+    context = _make_context(
+        slot_specs=[("2025-01-20", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 16),
+        horizon_end=date(2025, 1, 31),
+        history_summary=summary,
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
+
+
+def test_due_hour_objective_prefers_matching_due_hours() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-02", 480), ("2025-01-03", 120)],
+        due_hours=10.0,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
+        due_weight=3.0,
+        full_day_hours_by_role={"INFERMIERE": 7.5},
+    )
+
+    artifacts = build_model(context)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(artifacts.model)
+
+    assert status == cp_model.OPTIMAL
+
+    deviation_var = next(iter(artifacts.monthly_hour_deviation.values()))
+    first_slot = artifacts.assign_vars[(0, 0)]
+    second_slot = artifacts.assign_vars[(0, 1)]
+
+    assert solver.Value(first_slot) == 1
+    assert solver.Value(second_slot) == 1
+    assert solver.Value(deviation_var) == 0
+
+    model_proto = artifacts.model.Proto()
+    target_index = next(
+        idx
+        for idx, variable in enumerate(model_proto.variables)
+        if variable.name == deviation_var.Name()
+    )
+    coeff_value = None
+    for var_ref, coeff in zip(model_proto.objective.vars, model_proto.objective.coeffs, strict=False):
+        if var_ref == target_index:
+            coeff_value = coeff
+            break
+
+    expected_coeff = int(round(
+        (3.0 / (7.5 * 60.0)) * DUE_HOUR_OBJECTIVE_SCALE
+    ))
+    assert coeff_value == expected_coeff
