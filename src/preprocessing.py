@@ -530,7 +530,9 @@ def build_all(dfs: dict, cfg: dict) -> dict:
             candidates = candidates.drop(columns=drop_cols)
 
     if "is_night" in candidates.columns:
-        night_mask = candidates["is_night"].fillna(False)
+        night_mask = (
+            candidates["is_night"].astype("boolean", copy=False).fillna(False).astype(bool)
+        )
         if "can_work_night" in candidates.columns:
             can_night = candidates["can_work_night"].fillna(True).astype(bool)
             candidates = candidates[~(night_mask & ~can_night)]
