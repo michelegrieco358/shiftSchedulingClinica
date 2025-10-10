@@ -87,6 +87,19 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                 var_name = f"st_e{emp_idx}_d{day_idx}_{state}"
                 state_vars[(emp_idx, day_idx, state)] = model.NewBoolVar(var_name)
 
+    for emp_idx in range(num_employees):
+        for day_idx in range(num_days):
+            vars_for_day = [state_vars[(emp_idx, day_idx, state)] for state in state_codes]
+            model.Add(sum(vars_for_day) == 1)
+
+    absence_state = _resolve_absence_state_code(context.cfg, state_codes)
+    if absence_state is not None:
+        absence_pairs = _collect_absence_pairs(context.leaves, eid_of, did_of)
+        for emp_idx, day_idx in absence_pairs:
+            var = state_vars.get((emp_idx, day_idx, absence_state))
+            if var is not None:
+                model.Add(var == 1)
+
     return ModelArtifacts(
         model=model,
         assign_vars=assign_vars,
@@ -121,6 +134,113 @@ def _parse_role_set(raw) -> set[str]:
     else:
         tokens = [text]
     return {_norm_upper(token) for token in tokens if token.strip()}
+
+
+def _resolve_absence_state_code(cfg: Mapping[str, Any] | None, state_codes: Iterable[str]) -> str | None:
+    """Determina il codice di stato da utilizzare per le assenze."""
+
+    codes = list(state_codes)
+    if not codes:
+        return None
+
+    candidates: list[str] = []
+    if isinstance(cfg, Mapping):
+        direct = cfg.get("absence_state_code")
+        if isinstance(direct, str):
+            candidates.append(direct)
+        states_cfg = cfg.get("states")
+        if isinstance(states_cfg, Mapping):
+            nested = states_cfg.get("absence_state_code")
+            if isinstance(nested, str):
+                candidates.append(nested)
+            nested_list = states_cfg.get("absence_state_codes")
+            if isinstance(nested_list, Iterable) and not isinstance(nested_list, (str, bytes)):
+                for item in nested_list:
+                    text = str(item).strip()
+                    if text:
+                        candidates.append(text)
+        direct_list = cfg.get("absence_state_codes")
+        if isinstance(direct_list, Iterable) and not isinstance(direct_list, (str, bytes)):
+            for item in direct_list:
+                text = str(item).strip()
+                if text:
+                    candidates.append(text)
+
+    normalized = [str(item).strip().upper() for item in candidates if str(item).strip()]
+    for candidate in normalized:
+        if candidate in codes:
+            return candidate
+
+    return "F" if "F" in codes else None
+
+
+def _collect_absence_pairs(
+    leaves: pd.DataFrame | None,
+    eid_of: Mapping[str, int],
+    did_of: Mapping[object, int],
+) -> set[tuple[int, int]]:
+    """Ricava le coppie (employee_idx, day_idx) assenti da ``leaves``."""
+
+    if leaves is None or leaves.empty:
+        return set()
+    if "employee_id" not in leaves.columns:
+        return set()
+
+    work = leaves.copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+
+    date_series = None
+    for col in ("date", "data", "giorno", "day", "slot_date"):
+        if col in work.columns:
+            date_series = pd.to_datetime(work[col], errors="coerce").dt.date
+            break
+    if date_series is None:
+        for col in ("date_dt", "data_dt", "giorno_dt", "day_dt"):
+            if col in work.columns:
+                date_series = pd.to_datetime(work[col], errors="coerce").dt.date
+                break
+
+    if date_series is not None:
+        work = work.assign(_date=date_series)
+    elif {"date_from", "date_to"}.issubset(work.columns):
+        records: list[tuple[str, object]] = []
+        for row in work.itertuples(index=False):
+            start = pd.to_datetime(getattr(row, "date_from"), errors="coerce")
+            end = pd.to_datetime(getattr(row, "date_to"), errors="coerce")
+            if pd.isna(start) or pd.isna(end):
+                continue
+            start = start.normalize()
+            end = end.normalize()
+            if end < start:
+                start, end = end, start
+            for day in pd.date_range(start, end, freq="D"):
+                records.append((getattr(row, "employee_id"), day.date()))
+        if not records:
+            return set()
+        work = pd.DataFrame(records, columns=["employee_id", "_date"])
+    else:
+        return set()
+
+    if "_date" not in work.columns:
+        return set()
+
+    mask = work["_date"].notna()
+    if "is_absent" in work.columns:
+        mask &= work["is_absent"].astype(bool)
+    if "is_leave_day" in work.columns:
+        mask &= work["is_leave_day"].astype(bool)
+    if "is_in_horizon" in work.columns:
+        mask &= work["is_in_horizon"].astype(bool)
+
+    filtered = work.loc[mask, ["employee_id", "_date"]].drop_duplicates()
+
+    result: set[tuple[int, int]] = set()
+    for employee_id, day in filtered.itertuples(index=False):
+        emp_idx = eid_of.get(employee_id)
+        day_idx = did_of.get(day)
+        if emp_idx is not None and day_idx is not None:
+            result.add((emp_idx, day_idx))
+    return result
 
 
 def _build_employee_role_map(employees: pd.DataFrame, bundle: Mapping[str, object]) -> dict[int, str]:
