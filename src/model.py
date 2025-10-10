@@ -42,8 +42,11 @@ class ModelArtifacts:
     """Colleziona riferimenti alle variabili e agli indici usati in solver."""
     model: cp_model.CpModel
     assign_vars: Dict[tuple[int, int], cp_model.IntVar]
+    state_vars: Dict[tuple[int, int, str], cp_model.IntVar]
     employee_index: Mapping[str, int]
     slot_index: Mapping[int, int]
+    day_index: Mapping[object, int]
+    state_codes: tuple[str, ...]
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
@@ -53,9 +56,24 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     bundle = context.bundle
     eid_of: Mapping[str, int] = bundle["eid_of"]
     sid_of: Mapping[int, int] = bundle["sid_of"]
+    did_of: Mapping[object, int] = bundle["did_of"]
     eligible_eids: Mapping[int, Iterable[int]] = bundle["eligible_eids"]
 
     assign_vars: Dict[tuple[int, int], cp_model.IntVar] = {}
+    state_vars: Dict[tuple[int, int, str], cp_model.IntVar] = {}
+
+    raw_states = context.cfg.get("state_codes") if isinstance(context.cfg, Mapping) else None
+    if raw_states:
+        state_codes = tuple(
+            str(code).strip().upper()
+            for code in raw_states
+            if str(code).strip()
+        )
+    else:
+        state_codes = ("M", "P", "N", "SN", "R", "F")
+
+    num_employees = int(bundle.get("num_employees", len(eid_of)))
+    num_days = int(bundle.get("num_days", len(did_of)))
 
     for slot_id in context.slots["slot_id"]:
         slot_idx = sid_of[slot_id]
@@ -63,11 +81,20 @@ def build_model(context: ModelContext) -> ModelArtifacts:
             var_name = f"x_e{emp_idx}_s{slot_idx}"
             assign_vars[(emp_idx, slot_idx)] = model.NewBoolVar(var_name)
 
+    for emp_idx in range(num_employees):
+        for day_idx in range(num_days):
+            for state in state_codes:
+                var_name = f"st_e{emp_idx}_d{day_idx}_{state}"
+                state_vars[(emp_idx, day_idx, state)] = model.NewBoolVar(var_name)
+
     return ModelArtifacts(
         model=model,
         assign_vars=assign_vars,
+        state_vars=state_vars,
         employee_index=eid_of,
         slot_index=sid_of,
+        day_index=did_of,
+        state_codes=state_codes,
     )
 
 
