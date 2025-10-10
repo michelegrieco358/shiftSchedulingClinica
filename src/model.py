@@ -10,6 +10,8 @@ from typing import Any, Dict, Iterable, List, Mapping
 DUE_HOUR_OBJECTIVE_SCALE = 1000
 CONSECUTIVE_NIGHT_OBJECTIVE_SCALE = 1000
 SINGLE_NIGHT_RECOVERY_OBJECTIVE_SCALE = 1000
+REST11_OBJECTIVE_SCALE = 1000
+WEEKLY_REST_OBJECTIVE_SCALE = 1000
 
 import pandas as pd
 
@@ -78,12 +80,14 @@ class ModelArtifacts:
     consecutive_night_penalty_weight: float
     single_night_recovery_penalties: Dict[tuple[int, int], cp_model.BoolVar]
     single_night_recovery_penalty_weight: float
+    rest11_penalty_weight: float
     rest_violation_pairs: Dict[tuple[int, int, int], cp_model.BoolVar]
     rest_violation_by_day: Dict[tuple[int, int], cp_model.BoolVar]
     rest_violation_month_totals: Dict[tuple[int, str], cp_model.IntVar]
     rest_violation_streaks: Dict[tuple[int, int], cp_model.IntVar]
     rest_day_flags: Dict[tuple[int, int], cp_model.BoolVar]
     weekly_rest_violations: Dict[tuple[int, int], cp_model.BoolVar]
+    weekly_rest_penalty_weight: float
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
@@ -264,6 +268,13 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     rest_info = _add_rest_constraints(context, model, assign_vars, bundle)
     rest_day_info = _add_rest_day_windows(context, model, state_vars, bundle, state_codes)
 
+    rest11_weight = _resolve_rest11_penalty_weight(
+        context.cfg if isinstance(context.cfg, Mapping) else None
+    )
+    weekly_rest_weight = _resolve_weekly_rest_penalty_weight(
+        context.cfg if isinstance(context.cfg, Mapping) else None
+    )
+
     objective_terms: List[cp_model.LinearExpr] = []
     objective_terms.extend(
         _build_due_hour_objective_terms(context, bundle, hour_info["monthly_deviation"])
@@ -272,6 +283,14 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     single_night_info = pattern_info.get("single_night_recovery", {}) if isinstance(pattern_info, Mapping) else {}
     objective_terms.extend(
         _build_single_night_recovery_objective_terms(single_night_info)
+    )
+    objective_terms.extend(
+        _build_rest11_objective_terms(rest_info["pair_violations"], rest11_weight)
+    )
+    objective_terms.extend(
+        _build_weekly_rest_objective_terms(
+            rest_day_info["weekly_violations"], weekly_rest_weight
+        )
     )
 
     if objective_terms:
@@ -296,12 +315,14 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         consecutive_night_penalty_weight=float(night_info.get("penalty_weight", 0.0)),
         single_night_recovery_penalties=single_night_penalties,
         single_night_recovery_penalty_weight=single_night_weight,
+        rest11_penalty_weight=rest11_weight,
         rest_violation_pairs=rest_info["pair_violations"],
         rest_violation_by_day=rest_info["day_flags"],
         rest_violation_month_totals=rest_info["monthly_totals"],
         rest_violation_streaks=rest_info["streak_vars"],
         rest_day_flags=rest_day_info["rest_day_flags"],
         weekly_rest_violations=rest_day_info["weekly_violations"],
+        weekly_rest_penalty_weight=weekly_rest_weight,
     )
 
 
@@ -1673,6 +1694,34 @@ def _build_single_night_recovery_objective_terms(
     return [var * coeff for var in violations.values()]
 
 
+def _build_rest11_objective_terms(
+    violations: Mapping[tuple[int, int, int], cp_model.BoolVar],
+    weight: float,
+) -> List[cp_model.LinearExpr]:
+    if not violations or weight <= 0:
+        return []
+
+    coeff = int(round(weight * REST11_OBJECTIVE_SCALE))
+    if coeff <= 0:
+        coeff = 1
+
+    return [var * coeff for var in violations.values()]
+
+
+def _build_weekly_rest_objective_terms(
+    violations: Mapping[tuple[int, int], cp_model.BoolVar],
+    weight: float,
+) -> List[cp_model.LinearExpr]:
+    if not violations or weight <= 0:
+        return []
+
+    coeff = int(round(weight * WEEKLY_REST_OBJECTIVE_SCALE))
+    if coeff <= 0:
+        coeff = 1
+
+    return [var * coeff for var in violations.values()]
+
+
 def _build_slot_night_flags(
     context: ModelContext,
     bundle: Mapping[str, object],
@@ -1768,6 +1817,86 @@ def _resolve_single_night_recovery_penalty_weight(cfg: Mapping[str, Any] | None)
     defaults = cfg.get("defaults")
     if isinstance(defaults, Mapping):
         fallback = _extract(defaults.get("night"))
+        if fallback is not None:
+            return fallback
+
+    return 0.0
+
+
+def _resolve_rest11_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+
+    def _extract(mapping: Mapping[str, Any] | None) -> float | None:
+        if not isinstance(mapping, Mapping):
+            return None
+        for key in (
+            "rest11_penalty_weight",
+            "penalty_rest11",
+            "penalty_rest11h",
+            "penalty_rest_gap",
+            "penalty_weight",
+        ):
+            raw = mapping.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+        return None
+
+    direct = _extract(cfg.get("rest_rules"))
+    if direct is not None:
+        return direct
+
+    defaults = cfg.get("defaults")
+    if isinstance(defaults, Mapping):
+        fallback = _extract(defaults.get("rest11h"))
+        if fallback is not None:
+            return fallback
+
+    return 0.0
+
+
+def _resolve_weekly_rest_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+
+    def _extract(mapping: Mapping[str, Any] | None) -> float | None:
+        if not isinstance(mapping, Mapping):
+            return None
+        for key in (
+            "weekly_rest_penalty_weight",
+            "penalty_weekly_rest",
+            "penalty_rest_week",
+            "penalty_rest_day_weekly",
+            "penalty_weight",
+        ):
+            raw = mapping.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+        return None
+
+    direct = _extract(cfg.get("rest_rules"))
+    if direct is not None:
+        return direct
+
+    defaults = cfg.get("defaults")
+    if isinstance(defaults, Mapping):
+        fallback = _extract(defaults)
+        if fallback is not None:
+            return fallback
+        rest_days = defaults.get("rest_days")
+        fallback = _extract(rest_days)
         if fallback is not None:
             return fallback
 

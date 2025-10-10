@@ -5,6 +5,8 @@ horizon:
 rest_rules:
   min_between_shifts_h: 11
   post_night_rest_h: 48
+  rest11_penalty_weight: 1.0
+  weekly_rest_penalty_weight: 1.0
 
 defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
