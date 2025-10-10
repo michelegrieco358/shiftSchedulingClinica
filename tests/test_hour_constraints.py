@@ -21,12 +21,21 @@ SUMMARY_COLUMNS = [
 ]
 
 
-def _make_history_summary(hours_with_leaves: float, month_start: str) -> pd.DataFrame:
+def _make_history_summary(
+    hours_with_leaves: float,
+    month_start: str,
+    *,
+    window_days: int = 15,
+) -> pd.DataFrame:
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
     return pd.DataFrame(
         {
             "employee_id": ["E1"],
             "window_start_date": [pd.Timestamp(month_start)],
-            "window_end_date": [pd.Timestamp(month_start) + pd.Timedelta(days=13)],
+            "window_end_date": [
+                pd.Timestamp(month_start) + pd.Timedelta(days=window_days - 1)
+            ],
             "hours_worked_h": [hours_with_leaves],
             "absence_hours_h": [0.0],
             "hours_with_leaves_h": [hours_with_leaves],
@@ -213,8 +222,8 @@ def test_monthly_due_slack_reflects_difference() -> None:
     context = _make_context(
         slot_specs=[("2025-01-02", 180), ("2025-01-03", 120)],
         due_hours=10,
-        horizon_start=date(2025, 1, 2),
-        horizon_end=date(2025, 1, 3),
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
     )
 
     artifacts = build_model(context)
@@ -226,6 +235,7 @@ def test_monthly_due_slack_reflects_difference() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
+    assert artifacts.monthly_hour_deviation
     key = next(iter(artifacts.monthly_hour_deviation.keys()))
     deviation = artifacts.monthly_hour_deviation[key]
     balance = artifacts.monthly_hour_balance[key]
@@ -240,7 +250,7 @@ def test_monthly_due_includes_history_summary() -> None:
         slot_specs=[("2025-01-16", 240), ("2025-01-17", 240)],
         due_hours=20,
         horizon_start=date(2025, 1, 16),
-        horizon_end=date(2025, 1, 17),
+        horizon_end=date(2025, 1, 31),
         history_summary=summary,
     )
 
@@ -253,6 +263,7 @@ def test_monthly_due_includes_history_summary() -> None:
     status = solver.Solve(model)
     assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
+    assert artifacts.monthly_hour_deviation
     key = next(iter(artifacts.monthly_hour_deviation.keys()))
     deviation = artifacts.monthly_hour_deviation[key]
     balance = artifacts.monthly_hour_balance[key]
@@ -260,3 +271,48 @@ def test_monthly_due_includes_history_summary() -> None:
     # History contributes 360 minutes, plan 480 minutes => deficit 360 minutes
     assert solver.Value(deviation) == 360
     assert solver.Value(balance) == -360
+
+
+def test_monthly_due_skipped_for_partial_month_without_history() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-05", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 15),
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
+
+
+def test_monthly_due_skipped_when_history_missing_for_early_gap() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-20", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 16),
+        horizon_end=date(2025, 1, 31),
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
+
+
+def test_monthly_due_skipped_when_history_not_long_enough() -> None:
+    summary = _make_history_summary(
+        hours_with_leaves=5.0,
+        month_start="2025-01-01",
+        window_days=10,
+    )
+    context = _make_context(
+        slot_specs=[("2025-01-20", 180)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 16),
+        horizon_end=date(2025, 1, 31),
+        history_summary=summary,
+    )
+
+    artifacts = build_model(context)
+
+    assert not artifacts.monthly_hour_deviation
