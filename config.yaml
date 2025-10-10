@@ -36,6 +36,7 @@ defaults:
     can_work_night: true
     max_per_week: 2
     max_per_month: 8
+    extra_consecutive_penalty_weight: 1.0
 roles:
   infermiere:
     can_work_night: true

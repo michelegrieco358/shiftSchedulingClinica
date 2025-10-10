@@ -61,7 +61,6 @@ def _make_context(
             "max_nights_week": [week_limit],
             "max_nights_month": [month_limit],
             "max_consecutive_nights": [consecutive_limit],
-            "penalty_extra_consecutive_night": [penalty_weight],
         }
     )
 
@@ -111,12 +110,17 @@ def _make_context(
 
     summary_df = _make_month_summary(horizon_start, month_history_count)
 
+    night_cfg: dict[str, object] = {"can_work_night": True}
+    if penalty_weight is not None:
+        night_cfg["extra_consecutive_penalty_weight"] = penalty_weight
+
     cfg = {
         "horizon": {
             "start_date": horizon_start.isoformat(),
             "end_date": horizon_end.isoformat(),
         },
         "shift_types": {"night_codes": ["N"]},
+        "night": night_cfg,
     }
 
     empty_df = pd.DataFrame()
@@ -293,5 +297,5 @@ def test_consecutive_night_penalty_counts_extra_nights() -> None:
     total_var = artifacts.consecutive_night_penalty_totals[0]
     assert solver.Value(total_var) == 3
 
-    weights = artifacts.consecutive_night_penalty_weights
-    assert weights.get(0) == 1.0
+    weight = artifacts.consecutive_night_penalty_weight
+    assert weight == 1.0
