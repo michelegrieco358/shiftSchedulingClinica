@@ -2108,6 +2108,47 @@ def _history_rest_dates_by_employee(
     return result
 
 
+def _history_dates_by_employee(
+    history: pd.DataFrame | None,
+    eid_of: Mapping[str, int],
+    before_day: date | None = None,
+) -> dict[int, list[date]]:
+    if history is None or history.empty:
+        return {}
+
+    if "employee_id" not in history.columns:
+        return {}
+
+    date_col = next(
+        (
+            col
+            for col in ("data", "date", "giorno", "day")
+            if col in history.columns
+        ),
+        None,
+    )
+    if date_col is None:
+        return {}
+
+    work = history.loc[:, ["employee_id", date_col]].copy()
+    work["employee_id"] = work["employee_id"].astype(str).str.strip()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce").dt.date
+
+    if before_day is not None:
+        work = work.loc[work[date_col] < before_day]
+
+    result: dict[int, set[date]] = defaultdict(set)
+    for employee_id, day in work.itertuples(index=False):
+        if pd.isna(day):
+            continue
+        emp_idx = eid_of.get(employee_id)
+        if emp_idx is None:
+            continue
+        result[emp_idx].add(day)
+
+    return {emp_idx: sorted(days) for emp_idx, days in result.items()}
+
+
 def _count_history_dates(dates: list[date], start: date | None, end: date | None) -> int:
     if not dates or start is None or end is None:
         return 0
@@ -2145,14 +2186,32 @@ def _add_rest_day_windows(
     day_dates: list[date | None] = [
         _parse_date_value(date_of.get(day_idx)) for day_idx in range(num_days)
     ]
-    first_day = next((day for day in day_dates if day is not None), None)
+
+    horizon_cfg = context.cfg.get("horizon") if isinstance(context.cfg, Mapping) else None
+    planning_start = (
+        _parse_date_value(horizon_cfg.get("start_date"))
+        if isinstance(horizon_cfg, Mapping)
+        else None
+    )
+    if planning_start is None:
+        planning_start = next((day for day in day_dates if day is not None), None)
+
+    origin_idx = 0
+    if planning_start is not None:
+        for idx, current_day in enumerate(day_dates):
+            if current_day == planning_start:
+                origin_idx = idx
+                break
 
     rest_limits, weekly_default, biweekly_default = _extract_rest_day_limits(context, bundle)
 
     history_sets = _history_rest_dates_by_employee(
-        context.history, set(rest_codes), eid_of, before_day=first_day
+        context.history, set(rest_codes), eid_of, before_day=planning_start
     )
     history_dates = {emp_idx: sorted(days) for emp_idx, days in history_sets.items()}
+    history_coverage = _history_dates_by_employee(
+        context.history, eid_of, before_day=planning_start
+    )
 
     rest_day_vars: dict[tuple[int, int], cp_model.BoolVar] = {}
     for emp_idx in range(num_employees):
@@ -2183,18 +2242,21 @@ def _add_rest_day_windows(
         biweekly_req = max(int(biweekly_req), 0)
 
         history_list = history_dates.get(emp_idx, [])
+        history_days = history_coverage.get(emp_idx, [])
 
-        for end_idx in range(num_days):
+        for end_idx in range(origin_idx, num_days):
             end_date = day_dates[end_idx]
 
             if weekly_req > 0:
-                start_idx = end_idx - weekly_window + 1
+                raw_start = end_idx - weekly_window + 1
+                missing_days = max(0, origin_idx - raw_start)
+                window_start_idx = max(raw_start, origin_idx)
                 window_terms = [
                     rest_day_vars[(emp_idx, idx)]
-                    for idx in range(max(start_idx, 0), end_idx + 1)
+                    for idx in range(max(window_start_idx, 0), end_idx + 1)
                 ]
                 history_count = 0
-                if start_idx < 0 and end_date is not None:
+                if missing_days > 0 and end_date is not None:
                     start_date = end_date - timedelta(days=weekly_window - 1)
                     history_count = _count_history_dates(history_list, start_date, end_date)
                 rest_sum = sum(window_terms) if window_terms else 0
@@ -2205,17 +2267,28 @@ def _add_rest_day_windows(
                 weekly_vars[(emp_idx, end_idx)] = violation
 
             if biweekly_req > 0:
-                start_idx = end_idx - biweekly_window + 1
+                raw_start = end_idx - biweekly_window + 1
+                missing_days = max(0, origin_idx - raw_start)
+                window_start_idx = max(raw_start, origin_idx)
                 window_terms = [
                     rest_day_vars[(emp_idx, idx)]
-                    for idx in range(max(start_idx, 0), end_idx + 1)
+                    for idx in range(max(window_start_idx, 0), end_idx + 1)
                 ]
                 history_count = 0
-                if start_idx < 0 and end_date is not None:
-                    start_date = end_date - timedelta(days=biweekly_window - 1)
+                if end_date is None:
+                    continue
+
+                start_date = end_date - timedelta(days=biweekly_window - 1)
+                coverage_days = len(window_terms)
+
+                if missing_days > 0:
                     history_count = _count_history_dates(history_list, start_date, end_date)
-                potential_rest = len(window_terms) + history_count
-                if potential_rest < biweekly_req:
+                    coverage_from_history = _count_history_dates(
+                        history_days, start_date, end_date
+                    )
+                    coverage_days += min(coverage_from_history, missing_days)
+
+                if coverage_days < biweekly_window:
                     continue
                 rest_sum = sum(window_terms) if window_terms else 0
                 model.Add(rest_sum + history_count >= biweekly_req)

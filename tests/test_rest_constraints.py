@@ -386,3 +386,123 @@ def test_holiday_days_count_as_rest() -> None:
 
     assert solver.Value(artifacts.weekly_rest_violations[(0, first_week_end)]) == 0
     assert solver.Value(artifacts.weekly_rest_violations[(0, second_week_end)]) == 0
+
+
+def test_biweekly_rest_constraint_waits_for_full_window_without_history() -> None:
+    days = [date(2025, 4, 1) + timedelta(days=offset) for offset in range(3)]
+    slot_days = [day.isoformat() for day in days]
+
+    context = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0] * len(slot_days),
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=0,
+        biweekly_min=2,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+
+    sid_of = artifacts.slot_index
+    day_index = artifacts.day_index
+    state_vars = artifacts.state_vars
+    assign_vars = artifacts.assign_vars
+
+    for idx, current_day in enumerate(days):
+        slot_idx = sid_of[idx + 1]
+        day_idx = day_index[current_day]
+        model.Add(assign_vars[(0, slot_idx)] == 1)
+        model.Add(state_vars[(0, day_idx, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+
+def test_biweekly_rest_constraint_uses_history_window() -> None:
+    horizon_start = date(2025, 5, 15)
+    days = [horizon_start]
+    slot_days = [day.isoformat() for day in days]
+
+    history_rows = []
+    for offset in range(1, 14):
+        past_day = horizon_start - timedelta(days=offset)
+        shift_code = "R" if offset in {3, 11} else "M"
+        history_rows.append(
+            {"employee_id": "E1", "turno": shift_code, "data": past_day.isoformat()}
+        )
+
+    history_rows_insufficient = []
+    for offset in range(1, 14):
+        past_day = horizon_start - timedelta(days=offset)
+        shift_code = "R" if offset == 3 else "M"
+        history_rows_insufficient.append(
+            {"employee_id": "E1", "turno": shift_code, "data": past_day.isoformat()}
+        )
+
+    context = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0],
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=0,
+        biweekly_min=2,
+        history_rows=history_rows,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+
+    sid_of = artifacts.slot_index
+    day_index = artifacts.day_index
+    state_vars = artifacts.state_vars
+    assign_vars = artifacts.assign_vars
+
+    slot_idx = sid_of[1]
+    day_idx = day_index[days[0]]
+    model.Add(assign_vars[(0, slot_idx)] == 1)
+    model.Add(state_vars[(0, day_idx, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+    context_insufficient = _make_rest_context(
+        horizon_start=days[0],
+        horizon_end=days[-1],
+        slot_days=slot_days,
+        gap_hours=[24.0],
+        rest_threshold=11.0,
+        monthly_limit=5,
+        consecutive_limit=5,
+        weekly_min=0,
+        biweekly_min=2,
+        history_rows=history_rows_insufficient,
+    )
+
+    artifacts_insufficient = build_model(context_insufficient)
+    model_insufficient = artifacts_insufficient.model
+
+    sid_of_insufficient = artifacts_insufficient.slot_index
+    day_index_insufficient = artifacts_insufficient.day_index
+    state_vars_insufficient = artifacts_insufficient.state_vars
+    assign_vars_insufficient = artifacts_insufficient.assign_vars
+
+    slot_idx_insufficient = sid_of_insufficient[1]
+    day_idx_insufficient = day_index_insufficient[days[0]]
+    model_insufficient.Add(assign_vars_insufficient[(0, slot_idx_insufficient)] == 1)
+    model_insufficient.Add(state_vars_insufficient[(0, day_idx_insufficient, "M")] == 1)
+
+    solver = cp_model.CpSolver()
+    status_insufficient = solver.Solve(model_insufficient)
+
+    assert status_insufficient == cp_model.INFEASIBLE
