@@ -83,6 +83,11 @@ def load_leaves(
     else:
         absence_hours_h = float(absence_hours_h)
 
+    horizon_start_ts, horizon_end_ts = _compute_horizon_window(calendar_df)
+    horizon_start_date = horizon_start_ts.date()
+    horizon_end_date = (horizon_end_ts - pd.Timedelta(days=1)).date()
+    month_start_date = horizon_start_date.replace(day=1)
+
     known_emp = set(employees_df["employee_id"].astype(str).unique())
     unknown = sorted(set(absences_df["employee_id"].unique()) - known_emp)
     if unknown:
@@ -93,6 +98,8 @@ def load_leaves(
     absences_df["tipo"] = absences_df["type"]
     abs_by_day = explode_absences_by_day(
         absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]],
+        min_date=min(month_start_date, horizon_start_date),
+        max_date=horizon_end_date,
         absence_hours_h=absence_hours_h,
     )
 
@@ -170,13 +177,20 @@ def load_leaves(
             shift_out.loc[crosses_mask, "shift_end_dt"] + pd.Timedelta(days=1)
         )
 
-        horizon_start, horizon_end = _compute_horizon_window(calendar_df)
+        history_mask = pd.Series(False, index=shift_out.index)
+        if "data_dt" in shift_out.columns:
+            data_dates = pd.to_datetime(shift_out["data_dt"], errors="coerce")
+            history_mask = data_dates.dt.date.ge(month_start_date) & data_dates.dt.date.lt(
+                horizon_start_date
+            )
+            history_mask = history_mask.fillna(False)
+
         overlaps = shift_out["shift_start_dt"].notna() & shift_out["shift_end_dt"].notna()
-        overlaps &= shift_out["shift_end_dt"] > horizon_start
-        overlaps &= shift_out["shift_start_dt"] < horizon_end
+        overlaps &= shift_out["shift_end_dt"] > horizon_start_ts
+        overlaps &= shift_out["shift_start_dt"] < horizon_end_ts
 
         in_horizon = shift_out["is_in_horizon"].astype("boolean", copy=False).fillna(False)
-        keep_mask = in_horizon.astype(bool) | overlaps
+        keep_mask = in_horizon.astype(bool) | overlaps | history_mask.astype(bool)
         shift_out = shift_out.loc[keep_mask].copy()
 
         shift_out = shift_out[
@@ -212,7 +226,18 @@ def load_leaves(
         day_out["tipo"] = day_out["type"]
         day_out["data_dt"] = pd.to_datetime(day_out["data"], format="%Y-%m-%d")
         day_out = attach_calendar(day_out, calendar_df)
-        day_out = day_out[day_out["is_in_horizon"].fillna(False)].copy()
+
+        history_mask = pd.Series(False, index=day_out.index)
+        if "data_dt" in day_out.columns:
+            day_dates = pd.to_datetime(day_out["data_dt"], errors="coerce")
+            history_mask = day_dates.dt.date.ge(month_start_date) & day_dates.dt.date.lt(
+                horizon_start_date
+            )
+            history_mask = history_mask.fillna(False)
+
+        horizon_mask = day_out["is_in_horizon"].astype("boolean", copy=False).fillna(False)
+        keep_mask = horizon_mask.astype(bool) | history_mask.astype(bool)
+        day_out = day_out.loc[keep_mask].copy()
 
         def _join_types(values: pd.Series) -> str:
             unique_vals = sorted({str(v).strip() for v in values if str(v).strip()})
