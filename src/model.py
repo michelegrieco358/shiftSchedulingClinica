@@ -49,8 +49,8 @@ class ModelContext:
     availability: pd.DataFrame
     leaves: pd.DataFrame
     history: pd.DataFrame
-    preassign_must: pd.DataFrame
-    preassign_forbid: pd.DataFrame
+    locks_must: pd.DataFrame
+    locks_forbid: pd.DataFrame
     gap_pairs: pd.DataFrame
     calendars: pd.DataFrame
     bundle: Mapping[str, object]
@@ -3598,8 +3598,8 @@ def build_context_from_data(data: Any, bundle: Mapping[str, object]) -> ModelCon
     availability = _optional_frame(data, "availability", "availability_df")
     leaves = _optional_frame(data, "leaves", "leaves_df")
     history = _optional_frame(data, "history", "history_df")
-    preassign_must = _optional_frame(data, "preassign_must", "preassign_must_df")
-    preassign_forbid = _optional_frame(data, "preassign_forbid", "preassign_forbid_df")
+    locks_must = _optional_frame(data, "locks_must", "locks_must_df")
+    locks_forbid = _optional_frame(data, "locks_forbid", "locks_forbid_df")
     gap_pairs = _optional_frame(data, "gaps", "gap_pairs_df")
     calendars = _require_frame(data, "calendar", "calendars", "calendar_df")
 
@@ -3613,8 +3613,8 @@ def build_context_from_data(data: Any, bundle: Mapping[str, object]) -> ModelCon
         availability=availability,
         leaves=leaves,
         history=history,
-        preassign_must=preassign_must,
-        preassign_forbid=preassign_forbid,
+        locks_must=locks_must,
+        locks_forbid=locks_forbid,
         gap_pairs=gap_pairs,
         calendars=calendars,
         bundle=bundle,

@@ -54,5 +54,5 @@ shift_types:
 cross:
   max_shifts_month: 6
   penalty_weight: 1.5
-preassignments:
+locks:
   allow_cross_reparto: true

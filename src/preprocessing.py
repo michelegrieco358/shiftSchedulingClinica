@@ -496,7 +496,7 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_slots = _pick_frame(dfs, "shift_slots", "shift_slots_df")
     df_elig = _pick_frame(dfs, "shift_role_eligibility", "shift_role_eligibility_df")
     df_pools = _pick_frame(dfs, "role_dept_pools", "role_dept_pools_df")
-    df_pre = _pick_frame(dfs, "preassignments", "preassignments_df")
+    df_locks = _pick_frame(dfs, "locks", "locks_df")
     df_abs = _pick_frame(dfs, "absences", "leaves_days_df", "leaves_df")
     df_availability = _pick_frame(dfs, "availability", "availability_df")
     df_role_requirements = _pick_frame(dfs, "groups_role_min_expanded")
@@ -715,8 +715,10 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     candidates = pd.concat([in_reparto_candidates, cross_candidates], ignore_index=True)
     candidates = candidates.drop_duplicates(subset=["employee_id2", "slot_id2"])
 
-    if df_pre is not None and not df_pre.empty:
-        forbidden_tbl = df_pre.loc[df_pre["lock"].astype(int) == -1, ["employee_id", "slot_id"]].drop_duplicates()
+    if df_locks is not None and not df_locks.empty:
+        forbidden_tbl = df_locks.loc[
+            df_locks["lock"].astype(int) == -1, ["employee_id", "slot_id"]
+        ].drop_duplicates()
         candidates = candidates.merge(
             forbidden_tbl,
             on=["employee_id", "slot_id"],

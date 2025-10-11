@@ -119,7 +119,7 @@ def _load_basic_employees(
     )
 
 
-def test_load_employees_and_cross_policy_overrides() -> None:
+def test_load_employees_and_cross_policy_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
 
@@ -134,19 +134,37 @@ def test_load_employees_and_cross_policy_overrides() -> None:
     enriched = enrich_employees_with_cross_policy(employees_df, cfg)
     lookup = enriched.set_index("employee_id")
 
-    assert lookup.loc["E001", "cross_max_shifts_month"] == 3
     cross_cfg = cfg["cross"]
-    assert lookup.loc["E001", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
-    )
+    assert lookup.loc["E001", "cross_max_shifts_month"] == 3
     assert lookup.loc["E002", "cross_max_shifts_month"] == cross_cfg["max_shifts_month"]
-    assert lookup.loc["E002", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
-    )
     assert lookup.loc["E003", "cross_max_shifts_month"] == 0
-    assert lookup.loc["E003", "cross_penalty_weight"] == pytest.approx(
-        cross_cfg["penalty_weight"]
+    assert "cross_penalty_weight" not in enriched.columns
+
+
+def test_enrich_employees_with_cross_policy_rejects_penalty_override(tmp_path: Path) -> None:
+    cfg_path = _write_basic_config(
+        tmp_path,
+        defaults_extra={
+            "departments": ["dep"],
+        },
     )
+    cfg = load_config(str(cfg_path))
+    cfg["cross"] = {"max_shifts_month": 3, "penalty_weight": 1.0}
+
+    employees_df = pd.DataFrame(
+        [
+            {
+                "employee_id": "E1",
+                "nome": "Anna",
+                "role": "infermiere",
+                "reparto_id": "dep",
+                "cross_penalty_weight": 0.5,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cross_penalty_weight"):
+        enrich_employees_with_cross_policy(employees_df, cfg)
 
 
 def test_build_calendar_extends_to_month_start_for_partial_plans() -> None:
@@ -897,9 +915,6 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
     for src in DATA_CSV_DIR.glob('*.csv'):
         shutil.copy(src, data_dir / src.name)
 
-    pd.DataFrame(columns=['employee_id', 'slot_id', 'lock']).to_csv(
-        data_dir / 'preassignments.csv', index=False
-    )
     pd.DataFrame(
         columns=['date', 'reparto_id', 'shift_code', 'employee_id', 'lock_type']
     ).to_csv(data_dir / 'locks.csv', index=False)
@@ -907,14 +922,12 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
     with warnings.catch_warnings():
         warnings.filterwarnings(
             'ignore',
-            message=r'preassignments: caricati .*',
+            message=r'locks.csv: caricati .*',
             category=UserWarning,
         )
         loaded = load_all(str(cfg_path), str(data_dir))
     assert not loaded.employees_df.empty
-    assert {
-        'cross_max_shifts_month',
-        'cross_penalty_weight',
-    }.issubset(loaded.employees_df.columns)
+    assert {'cross_max_shifts_month'}.issubset(loaded.employees_df.columns)
+    assert 'cross_penalty_weight' not in loaded.employees_df.columns
     assert not loaded.leaves_df.empty
     assert not loaded.availability_df.empty
