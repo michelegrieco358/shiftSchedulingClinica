@@ -10,116 +10,118 @@ _REQUIRED_COLUMNS = {"employee_id", "slot_id", "lock"}
 _LOCK_TYPE_MAP = {"MUST_DO": 1, "FORBIDDEN": -1}
 
 
-def load_preassignments(
-    path: str,
-    shift_slots: pd.DataFrame | None = None,
-    *,
-    locks_path: str | None = None,
-) -> pd.DataFrame:
-    """Load and validate preassignment locks from ``preassignments.csv`` and ``locks.csv``."""
+def load_locks(path: str, shift_slots: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Load and normalize hard assignment locks from ``locks.csv``."""
 
+    if not os.path.exists(path):
+        warnings.warn(
+            "locks.csv non trovato: caricati 0 record da locks.csv",
+            UserWarning,
+            stacklevel=2,
+        )
+        return pd.DataFrame(columns=["employee_id", "slot_id", "lock", "note"])
+
+    raw_df = pd.read_csv(path, dtype=str).fillna("")
     records: list[pd.DataFrame] = []
-    preassign_count = 0
-    locks_count = 0
 
-    if os.path.exists(path):
-        df = pd.read_csv(path, dtype=str).fillna("")
+    has_direct_slot = _REQUIRED_COLUMNS.issubset(raw_df.columns)
+    has_symbolic = {"date", "reparto_id", "shift_code", "employee_id", "lock_type"}.issubset(
+        raw_df.columns
+    )
 
-        missing = _REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise ValueError(
-                "preassignments.csv: colonne mancanti: " + str(sorted(missing))
-            )
+    if not has_direct_slot and not has_symbolic:
+        missing_direct = _REQUIRED_COLUMNS - set(raw_df.columns)
+        missing_symbolic = {
+            "date",
+            "reparto_id",
+            "shift_code",
+            "employee_id",
+            "lock_type",
+        } - set(raw_df.columns)
+        raise ValueError(
+            "locks.csv: formato non valido. "
+            "Richieste le colonne {employee_id, slot_id, lock} oppure "
+            "{date, reparto_id, shift_code, employee_id, lock_type}. "
+            f"Colonne mancanti: direct={sorted(missing_direct)} symbolic={sorted(missing_symbolic)}"
+        )
 
-        columns_order = [
+    if has_direct_slot:
+        direct_columns = [
             "employee_id",
             "slot_id",
             "lock",
-            *[col for col in df.columns if col not in _REQUIRED_COLUMNS],
+            *[col for col in raw_df.columns if col not in _REQUIRED_COLUMNS],
         ]
-        work_df = df.loc[:, columns_order].copy()
+        direct_df = raw_df.loc[:, direct_columns].copy()
 
-        work_df["employee_id"] = work_df["employee_id"].astype(str).str.strip()
-        if work_df["employee_id"].eq("").any():
-            bad_idx = work_df.index[work_df["employee_id"].eq("")].tolist()[:5]
+        direct_df["employee_id"] = direct_df["employee_id"].astype(str).str.strip()
+        if direct_df["employee_id"].eq("").any():
+            bad_idx = direct_df.index[direct_df["employee_id"].eq("")].tolist()[:5]
             raise ValueError(
-                "preassignments.csv: employee_id non può essere vuoto. "
+                "locks.csv: employee_id non può essere vuoto (sezione slot_id). "
                 f"Prime occorrenze: {bad_idx}"
             )
 
-        slot_series = work_df["slot_id"].astype(str).str.strip()
+        slot_series = direct_df["slot_id"].astype(str).str.strip()
         if slot_series.eq("").any():
-            bad_idx = work_df.index[slot_series.eq("")].tolist()[:5]
+            bad_idx = direct_df.index[slot_series.eq("")].tolist()[:5]
             raise ValueError(
-                "preassignments.csv: slot_id non può essere vuoto. "
+                "locks.csv: slot_id non può essere vuoto (sezione slot_id). "
                 f"Prime occorrenze: {bad_idx}"
             )
         try:
-            work_df["slot_id"] = pd.to_numeric(slot_series, errors="raise").astype(
+            direct_df["slot_id"] = pd.to_numeric(slot_series, errors="raise").astype(
                 "int64"
             )
         except ValueError as exc:
             raise ValueError(
-                "preassignments.csv: slot_id deve essere numerico intero"
+                "locks.csv: slot_id deve essere numerico intero (sezione slot_id)."
             ) from exc
 
-        lock_series = work_df["lock"].astype(str).str.strip()
+        lock_series = direct_df["lock"].astype(str).str.strip()
         if lock_series.eq("").any():
-            bad_idx = work_df.index[lock_series.eq("")].tolist()[:5]
+            bad_idx = direct_df.index[lock_series.eq("")].tolist()[:5]
             raise ValueError(
-                "preassignments.csv: lock non può essere vuoto. "
+                "locks.csv: lock non può essere vuoto (sezione slot_id). "
                 f"Prime occorrenze: {bad_idx}"
             )
         try:
-            work_df["lock"] = pd.to_numeric(lock_series, errors="raise").astype(int)
+            direct_df["lock"] = pd.to_numeric(lock_series, errors="raise").astype(int)
         except ValueError as exc:
-            raise ValueError("preassignments.csv: lock deve essere numerico") from exc
+            raise ValueError(
+                "locks.csv: lock deve essere numerico (sezione slot_id)."
+            ) from exc
 
-        bad_lock = sorted(set(work_df["lock"].unique()) - {1, -1})
+        bad_lock = sorted(set(direct_df["lock"].unique()) - {1, -1})
         if bad_lock:
             raise ValueError(
-                "preassignments.csv: lock deve valere 1 (assegna) o -1 (veto). "
+                "locks.csv: lock deve valere 1 (assegna) o -1 (veto). "
                 f"Valori non validi: {bad_lock}"
             )
 
-        if "note" in work_df.columns:
-            work_df["note"] = work_df["note"].astype(str).str.strip()
+        if "note" in direct_df.columns:
+            direct_df["note"] = direct_df["note"].astype(str).str.strip()
 
-        work_df = work_df.drop_duplicates().reset_index(drop=True)
-        preassign_count = len(work_df)
-        records.append(work_df)
-    else:
-        warnings.warn(
-            "preassignments.csv non trovato: caricati 0 record da preassignments.csv",
-            UserWarning,
-            stacklevel=2,
-        )
+        records.append(direct_df.reset_index(drop=True))
 
-    locks_file = locks_path
-    if locks_file is None:
-        locks_file = os.path.join(os.path.dirname(path), "locks.csv")
-
-    if locks_file and os.path.exists(locks_file):
+    if has_symbolic:
         if shift_slots is None or shift_slots.empty:
             raise ValueError(
                 "locks.csv: impossibile risolvere gli slot senza shift_slots caricati"
             )
 
-        locks_df = pd.read_csv(locks_file, dtype=str).fillna("")
-        required_cols = {"date", "reparto_id", "shift_code", "employee_id", "lock_type"}
-        missing = required_cols - set(locks_df.columns)
-        if missing:
-            raise ValueError(
-                "locks.csv: colonne mancanti: " + str(sorted(missing))
-            )
+        locks_df = raw_df.loc[
+            :,
+            ["date", "reparto_id", "shift_code", "employee_id", "lock_type", "note"]
+            if "note" in raw_df.columns
+            else ["date", "reparto_id", "shift_code", "employee_id", "lock_type"],
+        ].copy()
 
-        locks_columns = ["date", "reparto_id", "shift_code", "employee_id", "lock_type"]
-        locks_df = locks_df.loc[:, locks_columns].copy()
         locks_df["employee_id"] = locks_df["employee_id"].astype(str).str.strip()
         if locks_df["employee_id"].eq("").any():
             bad_idx = locks_df.index[locks_df["employee_id"].eq("")].tolist()[:5]
             raise ValueError(
-                "locks.csv: employee_id non può essere vuoto. "
+                "locks.csv: employee_id non può essere vuoto (sezione simbolica). "
                 f"Prime occorrenze: {bad_idx}"
             )
 
@@ -127,7 +129,8 @@ def load_preassignments(
         if date_series.isna().any():
             bad_idx = locks_df.index[date_series.isna()].tolist()[:5]
             raise ValueError(
-                "locks.csv: date non valide per le righe: " + str(bad_idx)
+                "locks.csv: date non valide (sezione simbolica) per le righe: "
+                + str(bad_idx)
             )
         locks_df["date"] = date_series.dt.date
 
@@ -135,7 +138,7 @@ def load_preassignments(
         if locks_df["reparto_id"].eq("").any():
             bad_idx = locks_df.index[locks_df["reparto_id"].eq("")].tolist()[:5]
             raise ValueError(
-                "locks.csv: reparto_id non può essere vuoto. "
+                "locks.csv: reparto_id non può essere vuoto (sezione simbolica). "
                 f"Prime occorrenze: {bad_idx}"
             )
 
@@ -143,7 +146,7 @@ def load_preassignments(
         if locks_df["shift_code"].eq("").any():
             bad_idx = locks_df.index[locks_df["shift_code"].eq("")].tolist()[:5]
             raise ValueError(
-                "locks.csv: shift_code non può essere vuoto. "
+                "locks.csv: shift_code non può essere vuoto (sezione simbolica). "
                 f"Prime occorrenze: {bad_idx}"
             )
 
@@ -196,17 +199,13 @@ def load_preassignments(
                 UserWarning,
                 stacklevel=2,
             )
+
         valid = merged.loc[~missing_slot, ["employee_id", "slot_id", "lock"]].copy()
+        if "note" in merged.columns:
+            valid["note"] = merged.loc[~missing_slot, "note"].astype(str).str.strip()
         if not valid.empty:
             valid["slot_id"] = valid["slot_id"].astype("int64")
             records.append(valid.reset_index(drop=True))
-            locks_count = len(valid)
-    else:
-        warnings.warn(
-            "locks.csv non trovato: caricati 0 record da locks.csv",
-            UserWarning,
-            stacklevel=2,
-        )
 
     if not records:
         return pd.DataFrame(columns=["employee_id", "slot_id", "lock", "note"])
@@ -231,7 +230,7 @@ def load_preassignments(
             for row in conflicts.itertuples(index=False)
         ]
         raise ValueError(
-            "preassignments: lock contrastanti per le chiavi specificate: " + str(keys)
+            "locks: lock contrastanti per le chiavi specificate: " + str(keys)
         )
 
     combined = combined.drop_duplicates(subset=["employee_id", "slot_id", "lock"])
@@ -244,8 +243,7 @@ def load_preassignments(
     combined = combined.loc[:, columns_order].reset_index(drop=True)
 
     warnings.warn(
-        "preassignments: caricati %s record da preassignments.csv e %s da locks.csv"
-        % (preassign_count, locks_count),
+        "locks.csv: caricati %s record" % len(combined),
         UserWarning,
         stacklevel=2,
     )
@@ -253,24 +251,24 @@ def load_preassignments(
     return combined
 
 
-def validate_preassignments(
-    pre_df: pd.DataFrame,
+def validate_locks(
+    locks_df: pd.DataFrame,
     employees: pd.DataFrame,
     shift_slots: pd.DataFrame,
     absences_by_day: pd.DataFrame | None = None,
     shift_role_eligibility: pd.DataFrame | None = None,
     cross_reparto_enabled: bool = False,
 ) -> pd.DataFrame:
-    """Cross-check preassignments against employees, slots, roles and absences."""
+    """Cross-check locks against employees, slots, roles and absences."""
 
-    if pre_df.empty:
-        result_columns = list(pre_df.columns)
+    if locks_df.empty:
+        result_columns = list(locks_df.columns)
         for col in ("date", "reparto_id", "shift_code"):
             if col not in result_columns:
                 result_columns.append(col)
         return pd.DataFrame(columns=result_columns)
 
-    clean = pre_df.copy()
+    clean = locks_df.copy()
 
     clean["employee_id"] = clean["employee_id"].astype(str).str.strip()
     clean["slot_id"] = clean["slot_id"].astype("int64")
@@ -316,7 +314,7 @@ def validate_preassignments(
             for row in bad.itertuples(index=False)
         ]
         raise ValueError(
-            "preassignments: employee_id inesistente rispetto a employees.csv: "
+            "locks: employee_id inesistente rispetto a employees.csv: "
             f"{keys}"
         )
 
@@ -328,7 +326,7 @@ def validate_preassignments(
             for row in bad.itertuples(index=False)
         ]
         raise ValueError(
-            "preassignments: slot_id inesistente rispetto a shift_slots: " + str(keys)
+            "locks: slot_id inesistente rispetto a shift_slots: " + str(keys)
         )
 
     merged["shift_code"] = merged["shift_code"].astype(str).str.strip().str.upper()
@@ -351,7 +349,7 @@ def validate_preassignments(
                 for row in bad.itertuples(index=False)
             ]
             raise ValueError(
-                "preassignments: reparto diverso tra dipendente e slot (cross-reparto disabilitato): "
+                "locks: reparto diverso tra dipendente e slot (cross-reparto disabilitato): "
                 f"{keys}"
             )
     elif reparto_mismatch.any():
@@ -360,7 +358,7 @@ def validate_preassignments(
             ["employee_id", "slot_id", "employee_reparto_id", "slot_reparto_id"],
         ].drop_duplicates()
         warnings.warn(
-            "preassignments: reparto diverso tra dipendente e slot con cross-reparto abilitato: "
+            "locks: reparto diverso tra dipendente e slot con cross-reparto abilitato: "
             f"{bad.to_dict(orient='records')}",
             UserWarning,
             stacklevel=2,
@@ -401,7 +399,7 @@ def validate_preassignments(
                 for row in bad.itertuples(index=False)
             ]
             raise ValueError(
-                "preassignments: role del dipendente non idoneo per il turno dello slot: "
+                "locks: role del dipendente non idoneo per il turno dello slot: "
                 f"{keys}"
             )
 
@@ -413,7 +411,7 @@ def validate_preassignments(
             for row in bad.drop_duplicates().itertuples(index=False)
         ]
         raise ValueError(
-            "preassignments: impossibile determinare la data dello slot per le chiavi: "
+            "locks: impossibile determinare la data dello slot per le chiavi: "
             f"{keys}"
         )
     tz = getattr(start_ts.dt, "tz", None)
@@ -450,7 +448,7 @@ def validate_preassignments(
                 for row in bad.itertuples(index=False)
             ]
             raise ValueError(
-                "preassignments: lock=1 su giorni di assenza del dipendente: "
+                "locks: lock=1 su giorni di assenza del dipendente: "
                 f"{keys}"
             )
         merged = merged.drop(columns=["is_absent"])
@@ -469,10 +467,10 @@ def validate_preassignments(
     return merged.loc[:, result_columns].reset_index(drop=True)
 
 
-def split_preassignments(
+def split_locks(
     clean_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split validated preassignments into must-assign and forbid DataFrames."""
+    """Split validated locks into must-assign and forbid DataFrames."""
 
     must_df = (
         clean_df.loc[clean_df["lock"] == 1, ["employee_id", "slot_id"]]

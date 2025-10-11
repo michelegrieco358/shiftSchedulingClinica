@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from loader.coverage import build_slot_requirements, expand_requirements
-from loader.preassignments import validate_preassignments
+from loader.locks import validate_locks
 
 
 def test_expand_requirements_combines_groups_and_roles() -> None:
@@ -74,7 +74,7 @@ def test_build_slot_requirements_missing_demand_raises() -> None:
         build_slot_requirements(slots_df, coverage_roles_df)
 
 
-def test_validate_preassignments_respects_cross_reparto_flag() -> None:
+def test_validate_locks_respects_cross_reparto_flag() -> None:
     pre_df = pd.DataFrame({"employee_id": ["E1"], "slot_id": [1], "lock": [1]})
     employees = pd.DataFrame(
         {
@@ -93,7 +93,7 @@ def test_validate_preassignments_respects_cross_reparto_flag() -> None:
     )
 
     with pytest.raises(ValueError, match="cross-reparto disabilitato"):
-        validate_preassignments(
+        validate_locks(
             pre_df,
             employees,
             shift_slots,
@@ -101,7 +101,7 @@ def test_validate_preassignments_respects_cross_reparto_flag() -> None:
         )
 
     with pytest.warns(UserWarning, match="cross-reparto abilitato"):
-        result = validate_preassignments(
+        result = validate_locks(
             pre_df,
             employees,
             shift_slots,

@@ -25,15 +25,15 @@ def build_candidate_assignments(
     shift_slots: pd.DataFrame,
     shift_role_eligibility: pd.DataFrame,
     absences_by_day: pd.DataFrame | None = None,
-    must_preassign: pd.DataFrame | None = None,
-    forbid_preassign: pd.DataFrame | None = None,
+    must_locks: pd.DataFrame | None = None,
+    forbid_locks: pd.DataFrame | None = None,
     in_scope_only: bool = True,
 ) -> pd.DataFrame:
     """Build the candidate assignment table for the solver pre-processing stage.
 
     The output contains one row for each assignable pair ``(employee_id, slot_id)``
     after applying department compatibility, role eligibility, absences and
-    optional pre-assignment constraints.
+    optional lock constraints.
     """
 
     _validate_columns(
@@ -134,17 +134,15 @@ def build_candidate_assignments(
 
     must_df = None
     forbid_df = None
-    if must_preassign is not None and not must_preassign.empty:
-        _validate_columns(must_preassign, ["employee_id", "slot_id"], "must_preassign")
-        must_df = must_preassign.copy()
+    if must_locks is not None and not must_locks.empty:
+        _validate_columns(must_locks, ["employee_id", "slot_id"], "must_locks")
+        must_df = must_locks.copy()
         must_df["_employee_key"] = _normalise(must_df["employee_id"])
         must_df["_slot_id_key"] = _normalise(must_df["slot_id"])
         must_df = must_df.drop_duplicates(subset=["_employee_key", "_slot_id_key"])
-    if forbid_preassign is not None and not forbid_preassign.empty:
-        _validate_columns(
-            forbid_preassign, ["employee_id", "slot_id"], "forbid_preassign"
-        )
-        forbid_df = forbid_preassign.copy()
+    if forbid_locks is not None and not forbid_locks.empty:
+        _validate_columns(forbid_locks, ["employee_id", "slot_id"], "forbid_locks")
+        forbid_df = forbid_locks.copy()
         forbid_df["_employee_key"] = _normalise(forbid_df["employee_id"])
         forbid_df["_slot_id_key"] = _normalise(forbid_df["slot_id"])
         forbid_df = forbid_df.drop_duplicates(subset=["_employee_key", "_slot_id_key"])
@@ -159,7 +157,7 @@ def build_candidate_assignments(
                 for _, row in conflicts.iterrows()
             ]
             raise ValueError(
-                "preassignments: conflitto tra must e forbid per: "
+                "locks: conflitto tra must e forbid per: "
                 + ", ".join(sorted(conflict_pairs))
             )
 

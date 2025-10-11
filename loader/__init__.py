@@ -42,11 +42,7 @@ from .employees import (
 from .gap_pairs import build_gap_pairs
 from .history import load_history
 from .leaves import load_leaves
-from .preassignments import (
-    load_preassignments,
-    split_preassignments,
-    validate_preassignments,
-)
+from .locks import load_locks, split_locks, validate_locks
 from .shifts import (
     build_shift_slots,
     load_department_shift_map,
@@ -76,9 +72,9 @@ class LoadedData:
     role_dept_pools_df: pd.DataFrame
     dept_compat_df: pd.DataFrame
     gap_pairs_df: pd.DataFrame
-    preassignments_df: pd.DataFrame
-    preassign_must_df: pd.DataFrame
-    preassign_forbid_df: pd.DataFrame
+    locks_df: pd.DataFrame
+    locks_must_df: pd.DataFrame
+    locks_forbid_df: pd.DataFrame
     flags: dict[str, Any]
 
 
@@ -219,24 +215,23 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
                 .reset_index(drop=True)
             )
 
-    preassignments_raw_df = load_preassignments(
-        os.path.join(data_dir, "preassignments.csv"),
+    locks_raw_df = load_locks(
+        os.path.join(data_dir, "locks.csv"),
         shift_slots=shift_slots_df,
-        locks_path=os.path.join(data_dir, "locks.csv"),
     )
-    preassign_cfg = cfg.get("preassignments", {})
-    if not isinstance(preassign_cfg, dict):
-        preassign_cfg = {}
-    cross_reparto_cfg = preassign_cfg.get("allow_cross_reparto", False)
-    preassignments_df = validate_preassignments(
-        preassignments_raw_df,
+    locks_cfg = cfg.get("locks", {})
+    if not isinstance(locks_cfg, dict):
+        locks_cfg = {}
+    cross_reparto_cfg = locks_cfg.get("allow_cross_reparto", False)
+    locks_df = validate_locks(
+        locks_raw_df,
         employees_df,
         shift_slots_df,
         absences_by_day=absences_by_day_df,
         shift_role_eligibility=eligibility_df,
         cross_reparto_enabled=bool(cross_reparto_cfg),
     )
-    preassign_must_df, preassign_forbid_df = split_preassignments(preassignments_df)
+    locks_must_df, locks_forbid_df = split_locks(locks_df)
 
     return LoadedData(
         cfg=cfg,
@@ -257,9 +252,9 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         role_dept_pools_df=role_dept_pools_df,
         dept_compat_df=dept_compat_df,
         gap_pairs_df=gap_pairs_df,
-        preassignments_df=preassignments_df,
-        preassign_must_df=preassign_must_df,
-        preassign_forbid_df=preassign_forbid_df,
+        locks_df=locks_df,
+        locks_must_df=locks_must_df,
+        locks_forbid_df=locks_forbid_df,
         flags=absences_flags,
     )
 
@@ -274,7 +269,7 @@ __all__ = [
     "get_absence_hours_from_config",
     "enrich_shift_slots_calendar",
     "load_absences",
-    "load_preassignments",
-    "split_preassignments",
-    "validate_preassignments",
+    "load_locks",
+    "split_locks",
+    "validate_locks",
 ]

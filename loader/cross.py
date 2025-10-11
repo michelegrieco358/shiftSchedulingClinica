@@ -46,7 +46,7 @@ def _ensure_non_negative_default(
 def enrich_employees_with_cross_policy(
     employees: pd.DataFrame, config: dict[str, Any]
 ) -> pd.DataFrame:
-    """Attach cross-department policy defaults and overrides to employees."""
+    """Attach cross-department policy defaults to employees."""
 
     required_cols = ["employee_id", "reparto_id", "role"]
     missing = [col for col in required_cols if col not in employees.columns]
@@ -58,13 +58,19 @@ def enrich_employees_with_cross_policy(
     defaults = {
         "cross_max_shifts_month": _ensure_non_negative_default(
             config, "max_shifts_month", is_float=False
-        ),
-        "cross_penalty_weight": _ensure_non_negative_default(
-            config, "penalty_weight", is_float=True
-        ),
+        )
     }
 
+    # Ensure the global penalty weight is valid even if overrides are forbidden.
+    _ensure_non_negative_default(config, "penalty_weight", is_float=True)
+
     enriched = employees.copy()
+
+    if "cross_penalty_weight" in enriched.columns:
+        raise ValueError(
+            "employees: la colonna 'cross_penalty_weight' non è più supportata; "
+            "configurare il peso in config.yaml"
+        )
 
     for column, default_value in defaults.items():
         if column in enriched.columns:
@@ -79,13 +85,12 @@ def enrich_employees_with_cross_policy(
                 raise ValueError(
                     f"employees: '{column}' contiene valori non numerici"
                 )
-            if column != "cross_penalty_weight":
-                invalid_fraction = coerced.dropna() % 1 != 0
-                if invalid_fraction.any():
-                    raise ValueError(
-                        f"employees: '{column}' deve contenere soli interi non negativi"
-                    )
-                coerced = coerced.round()
+            invalid_fraction = coerced.dropna() % 1 != 0
+            if invalid_fraction.any():
+                raise ValueError(
+                    f"employees: '{column}' deve contenere soli interi non negativi"
+                )
+            coerced = coerced.round()
 
             if (coerced.dropna() < 0).any():
                 raise ValueError(
@@ -97,13 +102,8 @@ def enrich_employees_with_cross_policy(
             )
 
         filled = coerced.fillna(default_value)
-        if column == "cross_penalty_weight":
-            enriched[column] = filled.astype(float)
-        else:
-            enriched[column] = filled.astype(int)
+        enriched[column] = filled.astype(int)
 
-    if "cross_penalty_weight" not in enriched.columns:
-        enriched["cross_penalty_weight"] = defaults["cross_penalty_weight"]
     if "cross_max_shifts_month" not in enriched.columns:
         enriched["cross_max_shifts_month"] = defaults["cross_max_shifts_month"]
 
