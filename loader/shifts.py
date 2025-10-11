@@ -265,8 +265,6 @@ def _is_night_shift(
     end_minutes = end.components.hours * 60 + end.components.minutes
     if start_minutes >= 22 * 60:
         return True
-    if start_minutes < 6 * 60:
-        return True
     if end_minutes <= 6 * 60:
         return True
     return False
