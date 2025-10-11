@@ -34,7 +34,7 @@ _ALIAS_MAP = {
     "shift_slots": "shift_slots_df",
     "shift_role_eligibility": "eligibility_df",
     "role_dept_pools": "role_dept_pools_df",
-    "preassignments": "preassignments_df",
+    "locks": "locks_df",
     "availability": "availability_df",
     "slot_requirements": "slot_requirements_df",
     "month_plan": "month_plan_df",

@@ -915,9 +915,6 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
     for src in DATA_CSV_DIR.glob('*.csv'):
         shutil.copy(src, data_dir / src.name)
 
-    pd.DataFrame(columns=['employee_id', 'slot_id', 'lock']).to_csv(
-        data_dir / 'preassignments.csv', index=False
-    )
     pd.DataFrame(
         columns=['date', 'reparto_id', 'shift_code', 'employee_id', 'lock_type']
     ).to_csv(data_dir / 'locks.csv', index=False)
@@ -925,7 +922,7 @@ def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> Non
     with warnings.catch_warnings():
         warnings.filterwarnings(
             'ignore',
-            message=r'preassignments: caricati .*',
+            message=r'locks.csv: caricati .*',
             category=UserWarning,
         )
         loaded = load_all(str(cfg_path), str(data_dir))
