@@ -257,6 +257,8 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                         state_var = state_vars[(emp_idx, day_idx, state)]
                         model.Add(state_var == 0)
 
+    _apply_lock_constraints(context, model, assign_vars, bundle)
+
     hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
     night_info = _add_night_constraints(context, model, assign_vars, bundle)
     pattern_info = _add_night_pattern_constraints(
@@ -1455,6 +1457,82 @@ def _compute_history_nights_by_week(
         result[(emp_idx, str(week_id))] = result.get((emp_idx, str(week_id)), 0) + int(value)
 
     return result
+
+
+def _apply_lock_constraints(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
+    bundle: Mapping[str, object],
+) -> None:
+    """Apply hard must/forbid lock constraints on assignment variables."""
+
+    locks_must = getattr(context, "locks_must", pd.DataFrame())
+    locks_forbid = getattr(context, "locks_forbid", pd.DataFrame())
+
+    if (locks_must is None or locks_must.empty) and (
+        locks_forbid is None or locks_forbid.empty
+    ):
+        return
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    sid_of: Mapping[int, int] = bundle.get("sid_of", {})  # type: ignore[assignment]
+
+    if locks_must is not None and not locks_must.empty:
+        must_df = locks_must.loc[:, ["employee_id", "slot_id"]].copy()
+        must_df["employee_id"] = must_df["employee_id"].astype(str).str.strip()
+        must_df["slot_id"] = pd.to_numeric(must_df["slot_id"], errors="coerce")
+        must_df = must_df.dropna(subset=["employee_id", "slot_id"])
+        must_df["slot_id"] = must_df["slot_id"].astype(int)
+        must_df = must_df.drop_duplicates(ignore_index=True)
+
+        missing_pairs: list[tuple[str, int]] = []
+        for employee_id, slot_id in must_df.itertuples(index=False):
+            slot_idx = sid_of.get(slot_id)
+            if slot_idx is None:
+                # Il lock non cade nell'orizzonte attuale, viene ignorato.
+                continue
+
+            emp_idx = eid_of.get(employee_id)
+            if emp_idx is None:
+                missing_pairs.append((employee_id, slot_id))
+                continue
+
+            var = assign_vars.get((emp_idx, slot_idx))
+            if var is None:
+                missing_pairs.append((employee_id, slot_id))
+                continue
+
+            model.Add(var == 1)
+
+        if missing_pairs:
+            preview = ", ".join(f"({emp}, {slot})" for emp, slot in missing_pairs[:5])
+            raise ValueError(
+                "locks_must contiene coppie non ammesse tra i candidati: "
+                f"{preview}"
+            )
+
+    if locks_forbid is not None and not locks_forbid.empty:
+        forbid_df = locks_forbid.loc[:, ["employee_id", "slot_id"]].copy()
+        forbid_df["employee_id"] = forbid_df["employee_id"].astype(str).str.strip()
+        forbid_df["slot_id"] = pd.to_numeric(forbid_df["slot_id"], errors="coerce")
+        forbid_df = forbid_df.dropna(subset=["employee_id", "slot_id"])
+        forbid_df["slot_id"] = forbid_df["slot_id"].astype(int)
+        forbid_df = forbid_df.drop_duplicates(ignore_index=True)
+
+        for employee_id, slot_id in forbid_df.itertuples(index=False):
+            slot_idx = sid_of.get(slot_id)
+            if slot_idx is None:
+                # Fuori orizzonte: il blocco non ha effetto nel modello corrente.
+                continue
+
+            emp_idx = eid_of.get(employee_id)
+            if emp_idx is None:
+                continue
+
+            var = assign_vars.get((emp_idx, slot_idx))
+            if var is not None:
+                model.Add(var == 0)
 
 
 def _add_hour_constraints(
