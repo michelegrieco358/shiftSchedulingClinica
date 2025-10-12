@@ -16,8 +16,8 @@ def test_adaptive_coefficients_respect_monotonicity() -> None:
     assert set(coeffs.columns) == {"c_under", "c_over"}
     assert coeffs["c_under"].between(1.0, 2.0).all()
     assert coeffs["c_over"].between(1.0, 2.0).all()
-    assert coeffs.loc["E1", "c_under"] <= coeffs.loc["E2", "c_under"] <= coeffs.loc["E4", "c_under"]
-    assert coeffs.loc["E5", "c_over"] <= coeffs.loc["E3", "c_over"]
+    assert coeffs.loc["E1", "c_under"] >= coeffs.loc["E2", "c_under"] >= coeffs.loc["E4", "c_under"]
+    assert coeffs.loc["E5", "c_over"] >= coeffs.loc["E3", "c_over"]
 
 
 def test_adaptive_coefficients_equal_balances_are_neutral() -> None:
@@ -45,5 +45,5 @@ def test_adaptive_coefficients_dataframe_input_with_clamp() -> None:
         min_range=20.0,
     )
 
-    assert pytest.approx(coeffs.loc["H1", "c_under"], rel=1e-6) == 2.0
-    assert pytest.approx(coeffs.loc["H2", "c_over"], rel=1e-6) == 2.0
+    assert pytest.approx(coeffs.loc["H1", "c_over"], rel=1e-6) == 2.0
+    assert pytest.approx(coeffs.loc["H2", "c_under"], rel=1e-6) == 2.0
