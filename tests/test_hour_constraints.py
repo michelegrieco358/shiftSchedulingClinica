@@ -59,6 +59,7 @@ def _make_context(
     horizon_end: date,
     max_week_hours: float | None = None,
     max_month_hours: float | None = None,
+    max_balance_delta_hours: float | None = None,
     history_entries: list[tuple[str, int]] | None = None,
     history_summary: pd.DataFrame | None = None,
     due_weight: float | None = None,
@@ -76,6 +77,8 @@ def _make_context(
     }
     employees_dict["max_week_hours_h"] = [max_week_hours]
     employees_dict["max_month_hours_h"] = [max_month_hours]
+    if max_balance_delta_hours is not None:
+        employees_dict["max_balance_delta_month_h"] = [max_balance_delta_hours]
     employees_dict["reparto_id"] = [employee_reparto]
     employees = pd.DataFrame(employees_dict)
 
@@ -311,6 +314,46 @@ def test_monthly_due_includes_history_summary() -> None:
     assert solver.Value(under_slack) == 360
     assert solver.Value(over_slack) == 0
     assert solver.Value(balance) == -360
+
+
+def test_monthly_balance_delta_blocks_excess_variation() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-05", 600), ("2025-01-06", 600)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
+        max_balance_delta_hours=6.0,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+    model.Add(artifacts.assign_vars[(0, 0)] == 1)
+    model.Add(artifacts.assign_vars[(0, 1)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.INFEASIBLE
+
+
+def test_monthly_balance_delta_allows_within_limit() -> None:
+    context = _make_context(
+        slot_specs=[("2025-01-05", 600), ("2025-01-06", 600)],
+        due_hours=10,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
+        max_balance_delta_hours=12.0,
+    )
+
+    artifacts = build_model(context)
+    model = artifacts.model
+    model.Add(artifacts.assign_vars[(0, 0)] == 1)
+    model.Add(artifacts.assign_vars[(0, 1)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
 
 def test_monthly_due_skipped_for_partial_month_without_history() -> None:

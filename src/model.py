@@ -828,10 +828,30 @@ def _extract_employee_hour_params(
             "month_hours_cap_h",
         ])
 
+        max_balance_delta = _pick_float(
+            row,
+            [
+                "max_balance_delta_month_h",
+                "balance_delta_month_h",
+                "max_month_balance_delta_h",
+            ],
+        )
+        if max_balance_delta is not None:
+            try:
+                max_balance_delta_minutes = int(round(max_balance_delta * 60))
+            except (TypeError, ValueError):
+                max_balance_delta_minutes = None
+            else:
+                if max_balance_delta_minutes <= 0:
+                    max_balance_delta_minutes = None
+        else:
+            max_balance_delta_minutes = None
+
         params[emp_idx] = {
             "due_minutes": int(round(due_hours * 60)) if due_hours is not None else None,
             "max_week_minutes": int(round(max_week_hours * 60)) if max_week_hours is not None else None,
             "max_month_minutes": int(round(max_month_hours * 60)) if max_month_hours is not None else None,
+            "max_balance_delta_minutes": max_balance_delta_minutes,
         }
 
     return params
@@ -1628,16 +1648,23 @@ def _add_hour_constraints(
             ]
             expr = sum(terms) if terms else 0
 
-            enforce_due = False
+            has_full_month_coverage = False
             if due_minutes is not None:
-                enforce_due = _should_enforce_month_due_hours(
+                has_full_month_coverage = _should_enforce_month_due_hours(
                     month_id,
                     horizon_start,
                     horizon_end,
                     month_history_ranges,
                 )
 
-            if enforce_due and due_minutes is not None:
+            if has_full_month_coverage and due_minutes is not None:
+                # We only build the due-hour slack (and the related balance
+                # variable) when the planning horizon plus the historical
+                # summary covers the entire calendar month.  Otherwise the
+                # equality below would force the solver to compensate for time
+                # that lies outside the available data window.  In those cases
+                # the hard balance-delta limit is skipped as well because it
+                # relies on the same balance variable.
                 bound = max(capacity + abs(history_minutes) + abs(due_minutes), 1)
                 balance = model.NewIntVar(
                     -bound,
@@ -1660,6 +1687,11 @@ def _add_hour_constraints(
                 monthly_balance_vars[(emp_idx, month_id)] = balance
                 monthly_under_vars[(emp_idx, month_id)] = under_var
                 monthly_over_vars[(emp_idx, month_id)] = over_var
+
+                balance_delta = params.get("max_balance_delta_minutes")
+                if isinstance(balance_delta, int) and balance_delta > 0:
+                    model.Add(balance <= balance_delta)
+                    model.Add(balance >= -balance_delta)
 
                 if deadband_minutes > 0:
                     under_eff = model.NewIntVar(
