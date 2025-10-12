@@ -356,6 +356,11 @@ def build_shift_slots(
 
         base = shift_lookup.loc[shift_code]
         override = dept_map.get((reparto_id, shift_code))
+        if override is None and shift_code not in TURNI_DOMANDA:
+            raise LoaderError(
+                "month_plan.csv: turno '%s' non abilitato per reparto '%s' (manca riga in reparto_shift_map.csv)"
+                % (shift_code, reparto_id)
+            )
         if override is not None and not bool(override.enabled):
             raise LoaderError(
                 "month_plan.csv: turno '%s' disabilitato per reparto '%s' secondo reparto_shift_map"

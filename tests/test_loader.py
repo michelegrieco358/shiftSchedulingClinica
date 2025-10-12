@@ -31,7 +31,11 @@ from loader.employees import (
     resolve_fulltime_baseline,
 )
 from loader.leaves import load_leaves
-from loader.shifts import load_shift_role_eligibility, load_shifts
+from loader.shifts import (
+    build_shift_slots,
+    load_shift_role_eligibility,
+    load_shifts,
+)
 from loader.utils import LoaderError
 
 
@@ -117,6 +121,139 @@ def _load_basic_employees(
         weeks_in_horizon,
         horizon_days,
     )
+
+
+def _basic_shifts_catalog() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "shift_id": "M",
+                "start": "06:00",
+                "end": "14:00",
+                "duration_min": 480,
+                "crosses_midnight": 0,
+                "start_time": pd.to_timedelta(6, unit="h"),
+                "end_time": pd.to_timedelta(14, unit="h"),
+            },
+            {
+                "shift_id": "P",
+                "start": "14:00",
+                "end": "22:00",
+                "duration_min": 480,
+                "crosses_midnight": 0,
+                "start_time": pd.to_timedelta(14, unit="h"),
+                "end_time": pd.to_timedelta(22, unit="h"),
+            },
+            {
+                "shift_id": "N",
+                "start": "22:00",
+                "end": "06:00",
+                "duration_min": 480,
+                "crosses_midnight": 1,
+                "start_time": pd.to_timedelta(22, unit="h"),
+                "end_time": pd.to_timedelta(6, unit="h"),
+            },
+            {
+                "shift_id": "X",
+                "start": "10:00",
+                "end": "18:00",
+                "duration_min": 480,
+                "crosses_midnight": 0,
+                "start_time": pd.to_timedelta(10, unit="h"),
+                "end_time": pd.to_timedelta(18, unit="h"),
+            },
+        ]
+    )
+
+
+def _empty_dept_map_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "reparto_id",
+            "shift_code",
+            "enabled",
+            "start_override",
+            "end_override",
+            "start_override_time",
+            "end_override_time",
+        ]
+    )
+
+
+def test_build_shift_slots_keeps_standard_shifts_enabled_without_override() -> None:
+    shifts_df = _basic_shifts_catalog()
+    month_plan_df = pd.DataFrame(
+        [
+            {
+                "data": "2025-01-01",
+                "data_dt": pd.Timestamp("2025-01-01"),
+                "reparto_id": "DEP",
+                "shift_code": "M",
+                "coverage_code": "COV",
+            }
+        ]
+    )
+    defaults = {"departments": ["DEP"]}
+
+    slots_df = build_shift_slots(
+        month_plan_df,
+        shifts_df,
+        _empty_dept_map_df(),
+        defaults,
+    )
+
+    assert not slots_df.empty
+    assert slots_df.loc[0, "shift_code"] == "M"
+    assert slots_df.loc[0, "reparto_id"] == "DEP"
+
+
+def test_build_shift_slots_requires_explicit_department_enable_for_custom_shift() -> None:
+    shifts_df = _basic_shifts_catalog()
+    month_plan_df = pd.DataFrame(
+        [
+            {
+                "data": "2025-01-01",
+                "data_dt": pd.Timestamp("2025-01-01"),
+                "reparto_id": "DEP",
+                "shift_code": "X",
+                "coverage_code": "COV",
+            }
+        ]
+    )
+    defaults = {"departments": ["DEP"]}
+
+    with pytest.raises(LoaderError, match="non abilitato"):
+        build_shift_slots(
+            month_plan_df,
+            shifts_df,
+            _empty_dept_map_df(),
+            defaults,
+        )
+
+    dept_map_df = pd.DataFrame(
+        [
+            {
+                "reparto_id": "DEP",
+                "shift_code": "X",
+                "enabled": True,
+                "start_override": "",
+                "end_override": "",
+                "start_override_time": pd.NaT,
+                "end_override_time": pd.NaT,
+            }
+        ]
+    )
+
+    slots_df = build_shift_slots(
+        month_plan_df,
+        shifts_df,
+        dept_map_df,
+        defaults,
+    )
+
+    assert not slots_df.empty
+    assert slots_df.loc[0, "shift_code"] == "X"
+    assert slots_df.loc[0, "reparto_id"] == "DEP"
 
 
 def test_load_employees_and_cross_policy_defaults() -> None:
