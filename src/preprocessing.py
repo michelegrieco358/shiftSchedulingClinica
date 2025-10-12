@@ -225,8 +225,8 @@ def compute_adaptive_coefficients(
     scaled = (clamped - q_low) / scale
     scaled = np.clip(scaled, 0.0, 1.0)
 
-    c_under = 1.0 + scaled
-    c_over = 2.0 - scaled
+    c_under = 2.0 - scaled
+    c_over = 1.0 + scaled
 
     coeffs = pd.DataFrame(
         {"c_under": c_under, "c_over": c_over}, index=series.index
