@@ -12,22 +12,27 @@ def _make_lock_context(
     *,
     locks_must: pd.DataFrame | None = None,
     locks_forbid: pd.DataFrame | None = None,
+    slots: pd.DataFrame | None = None,
 ) -> ModelContext:
     employees = pd.DataFrame({"employee_id": ["E1"], "role": ["INFERMIERE"]})
-    slots = pd.DataFrame(
-        {
-            "slot_id": [1],
-            "shift_code": ["M"],
-            "date": [date(2025, 1, 1)],
-        }
+    slots_df = (
+        slots
+        if slots is not None
+        else pd.DataFrame(
+            {
+                "slot_id": [1],
+                "shift_code": ["M"],
+                "date": [date(2025, 1, 1)],
+            }
+        )
     )
-    calendar = pd.DataFrame({"data": [pd.Timestamp("2025-01-01")]})
+    calendar = pd.DataFrame({"data": slots_df["date"].apply(pd.Timestamp)})
 
-    did_of = {date(2025, 1, 1): 0}
-    date_of = {0: date(2025, 1, 1)}
-    sid_of = {1: 0}
-    slot_of = {0: 1}
-    slot_date2 = {0: 0}
+    did_of = {d: idx for idx, d in enumerate(sorted({d for d in slots_df["date"]}))}
+    date_of = {idx: d for d, idx in did_of.items()}
+    sid_of = {slot_id: idx for idx, slot_id in enumerate(slots_df["slot_id"]) }
+    slot_of = {idx: slot_id for slot_id, idx in sid_of.items()}
+    slot_date2 = {sid_of[row.slot_id]: did_of[row.date] for row in slots_df.itertuples(index=False)}
 
     bundle = {
         "eid_of": {"E1": 0},
@@ -37,9 +42,9 @@ def _make_lock_context(
         "did_of": did_of,
         "date_of": date_of,
         "num_employees": 1,
-        "num_slots": 1,
-        "num_days": 1,
-        "eligible_eids": {0: [0]},
+        "num_slots": len(slots_df),
+        "num_days": len(did_of),
+        "eligible_eids": {sid_of[row.slot_id]: [0] for row in slots_df.itertuples(index=False)},
         "slot_date2": slot_date2,
     }
 
@@ -58,7 +63,7 @@ def _make_lock_context(
     return ModelContext(
         cfg={},
         employees=employees,
-        slots=slots,
+        slots=slots_df,
         coverage_roles=empty,
         coverage_totals=empty,
         slot_requirements=empty,
@@ -109,4 +114,28 @@ def test_forbid_lock_blocks_assignment() -> None:
     solver2 = cp_model.CpSolver()
     infeasible_status = solver2.Solve(artifacts.model)
     assert infeasible_status == cp_model.INFEASIBLE
+
+
+def test_must_lock_outside_horizon_is_ignored() -> None:
+    context = _make_lock_context(
+        locks_must=pd.DataFrame({"employee_id": ["E1"], "slot_id": [99]}),
+    )
+
+    artifacts = build_model(context)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(artifacts.model)
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+
+
+def test_forbid_lock_outside_horizon_is_ignored() -> None:
+    context = _make_lock_context(
+        locks_forbid=pd.DataFrame({"employee_id": ["E1"], "slot_id": [99]}),
+    )
+
+    artifacts = build_model(context)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(artifacts.model)
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 

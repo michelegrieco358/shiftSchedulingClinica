@@ -1488,12 +1488,21 @@ def _apply_lock_constraints(
 
         missing_pairs: list[tuple[str, int]] = []
         for employee_id, slot_id in must_df.itertuples(index=False):
-            emp_idx = eid_of.get(employee_id)
             slot_idx = sid_of.get(slot_id)
-            var = assign_vars.get((emp_idx, slot_idx)) if None not in (emp_idx, slot_idx) else None
+            if slot_idx is None:
+                # Il lock non cade nell'orizzonte attuale, viene ignorato.
+                continue
+
+            emp_idx = eid_of.get(employee_id)
+            if emp_idx is None:
+                missing_pairs.append((employee_id, slot_id))
+                continue
+
+            var = assign_vars.get((emp_idx, slot_idx))
             if var is None:
                 missing_pairs.append((employee_id, slot_id))
                 continue
+
             model.Add(var == 1)
 
         if missing_pairs:
@@ -1512,10 +1521,15 @@ def _apply_lock_constraints(
         forbid_df = forbid_df.drop_duplicates(ignore_index=True)
 
         for employee_id, slot_id in forbid_df.itertuples(index=False):
-            emp_idx = eid_of.get(employee_id)
             slot_idx = sid_of.get(slot_id)
-            if None in (emp_idx, slot_idx):
+            if slot_idx is None:
+                # Fuori orizzonte: il blocco non ha effetto nel modello corrente.
                 continue
+
+            emp_idx = eid_of.get(employee_id)
+            if emp_idx is None:
+                continue
+
             var = assign_vars.get((emp_idx, slot_idx))
             if var is not None:
                 model.Add(var == 0)
