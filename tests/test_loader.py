@@ -704,7 +704,12 @@ def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_pa
 
 def test_load_leaves_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Path) -> None:
     calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
-    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    employees_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "absence_full_day_hours_effective_h": [7.5],
+        }
+    )
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["N"],
@@ -732,7 +737,12 @@ def test_load_leaves_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Pa
 
 def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
     calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
-    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    employees_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "absence_full_day_hours_effective_h": [7.5],
+        }
+    )
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["M"],
@@ -749,13 +759,7 @@ def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
         "E1,2024-04-01,2024-04-01,FERIE\n"
     )
 
-    _, day_out = load_leaves(
-        str(leaves_path),
-        employees_df,
-        shifts_df,
-        calendar_df,
-        absence_hours_h=7.5,
-    )
+    _, day_out = load_leaves(str(leaves_path), employees_df, shifts_df, calendar_df)
 
     assert not day_out.empty
     assert day_out.loc[0, "absence_hours_h"] == pytest.approx(7.5)
@@ -763,7 +767,12 @@ def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
 
 def test_load_leaves_keeps_month_history_prior_to_horizon(tmp_path: Path) -> None:
     calendar_df = build_calendar(date(2024, 4, 15), date(2024, 4, 20))
-    employees_df = pd.DataFrame({"employee_id": ["E1"]})
+    employees_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "absence_full_day_hours_effective_h": [6.0],
+        }
+    )
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["M"],
@@ -786,6 +795,42 @@ def test_load_leaves_keeps_month_history_prior_to_horizon(tmp_path: Path) -> Non
     row = day_out.loc[day_out["data"].eq("2024-04-05")].iloc[0]
     assert not bool(row["is_in_horizon"])
     assert row["absence_hours_h"] == pytest.approx(6.0)
+
+
+def test_load_leaves_uses_fallback_absence_hours(tmp_path: Path) -> None:
+    calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
+    employees_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "absence_full_day_hours_effective_h": [float("nan")],
+        }
+    )
+    shifts_df = pd.DataFrame(
+        {
+            "shift_id": ["M"],
+            "duration_min": [480],
+            "crosses_midnight": [0],
+            "start_time": [pd.to_timedelta(8, unit="h")],
+            "end_time": [pd.to_timedelta(16, unit="h")],
+        }
+    )
+
+    leaves_path = tmp_path / "leaves.csv"
+    leaves_path.write_text(
+        "employee_id,date_from,date_to,type\n"
+        "E1,2024-04-01,2024-04-01,FERIE\n"
+    )
+
+    _, day_out = load_leaves(
+        str(leaves_path),
+        employees_df,
+        shifts_df,
+        calendar_df,
+        absence_hours_h=7.25,
+    )
+
+    assert not day_out.empty
+    assert day_out.loc[0, "absence_hours_h"] == pytest.approx(7.25)
 def test_enrich_employees_with_fte_uses_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)

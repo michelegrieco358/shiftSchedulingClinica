@@ -78,30 +78,84 @@ def load_leaves(
 
     absences_df = load_absences(path)
 
-    if absence_hours_h is None:
-        absence_hours_h = 6.0
-    else:
-        absence_hours_h = float(absence_hours_h)
+    if absence_hours_h is not None:
+        try:
+            absence_hours_h = float(absence_hours_h)
+        except (TypeError, ValueError) as exc:
+            raise LoaderError("absence_hours_h deve essere numerico") from exc
+        if absence_hours_h <= 0:
+            raise LoaderError("absence_hours_h deve essere positivo")
 
     horizon_start_ts, horizon_end_ts = _compute_horizon_window(calendar_df)
     horizon_start_date = horizon_start_ts.date()
     horizon_end_date = (horizon_end_ts - pd.Timedelta(days=1)).date()
     month_start_date = horizon_start_date.replace(day=1)
 
-    known_emp = set(employees_df["employee_id"].astype(str).unique())
+    employees_df = employees_df.copy()
+    employees_df["employee_id"] = employees_df["employee_id"].astype(str).str.strip()
+
+    if "absence_full_day_hours_effective_h" not in employees_df.columns:
+        raise LoaderError(
+            "employees_df deve contenere la colonna absence_full_day_hours_effective_h"
+        )
+
+    hours_series = pd.to_numeric(
+        employees_df.set_index("employee_id")["absence_full_day_hours_effective_h"],
+        errors="coerce",
+    )
+
+    abs_employee_ids = absences_df["employee_id"].unique().tolist()
+    hours_for_absences = hours_series.reindex(abs_employee_ids)
+    if absence_hours_h is not None:
+        hours_for_absences = hours_for_absences.fillna(absence_hours_h)
+
+    known_emp = set(employees_df["employee_id"].unique())
     unknown = sorted(set(absences_df["employee_id"].unique()) - known_emp)
     if unknown:
         raise LoaderError(f"leaves.csv: employee_id sconosciuti: {unknown}")
 
+    missing_hours = sorted(
+        {emp for emp, value in hours_for_absences.items() if pd.isna(value)}
+    )
+    if missing_hours:
+        raise LoaderError(
+            "leaves.csv: ore di assenza non definite per i dipendenti: "
+            f"{missing_hours}"
+        )
+
+    invalid_hours = sorted(
+        {
+            emp for emp, value in hours_for_absences.items() if value is not None and value <= 0
+        }
+    )
+    if invalid_hours:
+        raise LoaderError(
+            "leaves.csv: ore di assenza non positive per i dipendenti: "
+            f"{invalid_hours}"
+        )
+
+    hours_series = hours_series.copy()
+    for emp, value in hours_for_absences.items():
+        hours_series.loc[emp] = value
+
     absences_df["start_date_dt"] = pd.to_datetime(absences_df["date_from"], format="%Y-%m-%d")
     absences_df["end_date_dt"] = pd.to_datetime(absences_df["date_to"], format="%Y-%m-%d")
     absences_df["tipo"] = absences_df["type"]
+    explode_fallback = (
+        float(hours_for_absences.min())
+        if hours_for_absences.size and not pd.isna(hours_for_absences.min())
+        else (absence_hours_h if absence_hours_h is not None else 6.0)
+    )
     abs_by_day = explode_absences_by_day(
         absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]],
         min_date=min(month_start_date, horizon_start_date),
         max_date=horizon_end_date,
-        absence_hours_h=absence_hours_h,
+        absence_hours_h=explode_fallback,
     )
+
+    if not abs_by_day.empty:
+        abs_by_day["employee_id"] = abs_by_day["employee_id"].astype(str).str.strip()
+        abs_by_day["absence_hours_h"] = abs_by_day["employee_id"].map(hours_series)
 
     shift_info = shifts_df.loc[
         shifts_df["shift_id"].isin(allowed_turns),
