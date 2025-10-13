@@ -81,6 +81,8 @@ class ModelArtifacts:
     monthly_hour_over_slack: Dict[tuple[int, str], cp_model.IntVar]
     monthly_hour_under_effective: Dict[tuple[int, str], cp_model.IntVar]
     monthly_hour_over_effective: Dict[tuple[int, str], cp_model.IntVar]
+    final_hour_balance: Dict[tuple[int, str], cp_model.IntVar]
+    final_hour_balance_abs: Dict[tuple[int, str], cp_model.IntVar]
     night_assignment_by_day: Dict[tuple[int, int], cp_model.BoolVar]
     consecutive_night_penalties: Dict[tuple[int, int], cp_model.IntVar]
     consecutive_night_penalty_totals: Dict[int, cp_model.IntVar]
@@ -299,6 +301,9 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     objective_terms.extend(
         _build_due_hour_objective_terms(context, bundle, hour_info)
     )
+    objective_terms.extend(
+        _build_final_balance_objective_terms(context, bundle, hour_info)
+    )
     objective_terms.extend(_build_consecutive_night_objective_terms(night_info))
     single_night_info = pattern_info.get("single_night_recovery", {}) if isinstance(pattern_info, Mapping) else {}
     objective_terms.extend(
@@ -338,6 +343,8 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         monthly_hour_over_slack=hour_info["monthly_over"],
         monthly_hour_under_effective=hour_info["monthly_under_effective"],
         monthly_hour_over_effective=hour_info["monthly_over_effective"],
+        final_hour_balance=hour_info["final_balance"],
+        final_hour_balance_abs=hour_info["final_balance_abs"],
         night_assignment_by_day=night_info["night_by_day"],
         consecutive_night_penalties=night_info["extra_penalties"],
         consecutive_night_penalty_totals=night_info["extra_totals"],
@@ -1584,6 +1591,8 @@ def _add_hour_constraints(
         "monthly_over": {},
         "monthly_under_effective": {},
         "monthly_over_effective": {},
+        "final_balance": {},
+        "final_balance_abs": {},
     }
 
     if not assign_vars:
@@ -1645,6 +1654,7 @@ def _add_hour_constraints(
     monthly_over_vars: dict[tuple[int, str], cp_model.IntVar] = {}
     monthly_under_effective: dict[tuple[int, str], cp_model.IntVar] = {}
     monthly_over_effective: dict[tuple[int, str], cp_model.IntVar] = {}
+    monthly_balance_bounds: dict[tuple[int, str], int] = {}
 
     deadband_minutes = _resolve_due_hours_deadband(context.cfg)
 
@@ -1702,6 +1712,7 @@ def _add_hour_constraints(
                 model.Add(balance == expr + history_minutes - due_minutes)
                 model.Add(balance == over_var - under_var)
                 monthly_balance_vars[(emp_idx, month_id)] = balance
+                monthly_balance_bounds[(emp_idx, month_id)] = bound
                 monthly_under_vars[(emp_idx, month_id)] = under_var
                 monthly_over_vars[(emp_idx, month_id)] = over_var
 
@@ -1745,6 +1756,51 @@ def _add_hour_constraints(
             if month_limit is not None:
                 model.Add(expr + history_minutes <= month_limit)
 
+    final_balance_vars: dict[tuple[int, str], cp_model.IntVar] = {}
+    final_balance_abs_vars: dict[tuple[int, str], cp_model.IntVar] = {}
+
+    if monthly_balance_vars:
+        emp_of: Mapping[int, str] = bundle.get("emp_of", {})  # type: ignore[assignment]
+        start_balances = _extract_start_balance_series(context)
+        balance_by_emp: dict[int, list[tuple[str, cp_model.IntVar]]] = defaultdict(list)
+        for (emp_idx, month_id), balance in monthly_balance_vars.items():
+            balance_by_emp.setdefault(emp_idx, []).append((month_id, balance))
+
+        for emp_idx, entries in balance_by_emp.items():
+            if not entries:
+                continue
+            emp_id = emp_of.get(emp_idx)
+            if emp_id is None:
+                continue
+            start_hours = float(start_balances.get(emp_id, 0.0))
+            start_minutes = int(round(start_hours * 60.0))
+
+            bound_sum = abs(start_minutes)
+            for month_id, _ in entries:
+                bound_sum += int(monthly_balance_bounds.get((emp_idx, month_id), 0))
+
+            if bound_sum <= 0:
+                bound_sum = 1
+
+            final_balance = model.NewIntVar(
+                -bound_sum,
+                bound_sum,
+                f"final_balance_e{emp_idx}",
+            )
+            month_terms = [balance for _, balance in entries]
+            model.Add(final_balance == start_minutes + sum(month_terms))
+
+            abs_bound = bound_sum
+            final_abs = model.NewIntVar(
+                0,
+                abs_bound,
+                f"final_balance_abs_e{emp_idx}",
+            )
+            model.AddAbsEquality(final_abs, final_balance)
+
+            final_balance_vars[(emp_idx, "final")] = final_balance
+            final_balance_abs_vars[(emp_idx, "final")] = final_abs
+
     for week_id, slots_in_week in week_slots.items():
         for emp_idx, params in employee_params.items():
             limit = params.get("max_week_minutes")
@@ -1765,6 +1821,8 @@ def _add_hour_constraints(
         "monthly_over": monthly_over_vars,
         "monthly_under_effective": monthly_under_effective,
         "monthly_over_effective": monthly_over_effective,
+        "final_balance": final_balance_vars,
+        "final_balance_abs": final_balance_abs_vars,
     }
 
 
@@ -1842,6 +1900,26 @@ def _resolve_due_hours_deadband(cfg: Mapping[str, Any] | None) -> int:
     if value <= 0:
         return 0
     return int(round(value * 60.0))
+
+
+def _resolve_final_balance_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+    defaults = cfg.get("defaults") if isinstance(cfg.get("defaults"), Mapping) else None
+    if defaults is None:
+        return 0.0
+    balance_cfg = defaults.get("balance") if isinstance(defaults.get("balance"), Mapping) else None
+    if balance_cfg is None:
+        return 0.0
+
+    raw = balance_cfg.get("final_balance_penalty_weight")
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(value, 0.0)
 
 
 def _extract_start_balance_series(context: ModelContext) -> pd.Series:
@@ -1996,6 +2074,73 @@ def _build_due_hour_objective_terms(
             if scaled <= 0:
                 scaled = 1
             terms.append(over_var * scaled)
+
+    return terms
+
+
+def _build_final_balance_objective_terms(
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    hour_info: Mapping[str, Mapping[tuple[int, str], cp_model.IntVar]],
+) -> List[cp_model.LinearExpr]:
+    abs_vars: Mapping[tuple[int, str], cp_model.IntVar] = hour_info.get(  # type: ignore[assignment]
+        "final_balance_abs",
+        {},
+    )
+    if not abs_vars:
+        return []
+
+    weight = _resolve_final_balance_penalty_weight(context.cfg)
+    if weight <= 0:
+        return []
+
+    role_minutes, fallback_minutes = _resolve_role_daily_minutes(context.cfg)
+    try:
+        role_map = _build_employee_role_map(context.employees, bundle)
+    except ValueError:
+        role_map = {}
+
+    emp_of: Mapping[int, str] = bundle.get("emp_of", {})  # type: ignore[assignment]
+    employee_ids = [emp_of.get(emp_idx) for emp_idx, _ in abs_vars.keys()]
+    employee_ids = [emp_id for emp_id in employee_ids if emp_id is not None]
+    employee_ids = list(dict.fromkeys(employee_ids))
+
+    if not employee_ids:
+        return []
+
+    start_balances = _extract_start_balance_series(context)
+    balance_series = pd.Series(
+        [start_balances.get(emp_id, 0.0) for emp_id in employee_ids],
+        index=pd.Index(employee_ids, name="employee_id"),
+        dtype=float,
+    )
+    coeffs_df = compute_adaptive_coefficients(balance_series)
+    coeffs_under = coeffs_df["c_under"].to_dict() if not coeffs_df.empty else {}
+    coeffs_over = coeffs_df["c_over"].to_dict() if not coeffs_df.empty else {}
+
+    terms: List[cp_model.LinearExpr] = []
+    for (emp_idx, _), abs_var in abs_vars.items():
+        emp_id = emp_of.get(emp_idx)
+        if emp_id is None:
+            continue
+
+        role_u = role_map.get(emp_idx, "")
+        minutes = role_minutes.get(role_u, 0.0)
+        if minutes <= 0:
+            minutes = fallback_minutes
+        if minutes <= 0:
+            continue
+
+        coeff_under = float(coeffs_under.get(emp_id, 1.5))
+        coeff_over = float(coeffs_over.get(emp_id, 1.5))
+        coeff = (coeff_under + coeff_over) / 2.0
+
+        penalty = (weight * coeff) / minutes
+        scaled = int(round(penalty * DUE_HOUR_OBJECTIVE_SCALE))
+        if scaled <= 0:
+            scaled = 1
+
+        terms.append(abs_var * scaled)
 
     return terms
 

@@ -63,6 +63,7 @@ def _make_context(
     history_entries: list[tuple[str, int]] | None = None,
     history_summary: pd.DataFrame | None = None,
     due_weight: float | None = None,
+    final_balance_weight: float | None = None,
     full_day_hours_by_role: dict[str, float] | None = None,
     fallback_daily_hours: float = 7.5,
     cross_weight: float | None = None,
@@ -146,8 +147,13 @@ def _make_context(
         "contract_hours_by_role_h": {"INFERMIERE": due_hours},
         "absences": absences_cfg,
     }
+    balance_cfg: dict[str, float] = {}
     if due_weight is not None:
-        defaults_cfg["balance"] = {"due_hours_penalty_weight": due_weight}
+        balance_cfg["due_hours_penalty_weight"] = due_weight
+    if final_balance_weight is not None:
+        balance_cfg["final_balance_penalty_weight"] = final_balance_weight
+    if balance_cfg:
+        defaults_cfg["balance"] = balance_cfg
 
     cfg = {
         "horizon": {
@@ -467,3 +473,61 @@ def test_cross_assignment_penalty_counts_cross_slots() -> None:
 
     expected = int(round(cross_weight * CROSS_ASSIGNMENT_OBJECTIVE_SCALE))
     assert solver.ObjectiveValue() == pytest.approx(expected)
+
+
+def test_final_balance_variables_require_full_month() -> None:
+    partial_context = _make_context(
+        slot_specs=[("2025-01-15", 480)],
+        due_hours=10.0,
+        horizon_start=date(2025, 1, 10),
+        horizon_end=date(2025, 1, 31),
+    )
+
+    partial_artifacts = build_model(partial_context)
+    assert partial_artifacts.final_hour_balance == {}
+    assert partial_artifacts.final_hour_balance_abs == {}
+
+    full_context = _make_context(
+        slot_specs=[("2025-01-15", 480)],
+        due_hours=10.0,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
+    )
+
+    full_artifacts = build_model(full_context)
+    assert (0, "final") in full_artifacts.final_hour_balance
+    assert (0, "final") in full_artifacts.final_hour_balance_abs
+
+
+def test_final_balance_objective_scales_with_role_minutes() -> None:
+    weight = 4.0
+    context = _make_context(
+        slot_specs=[("2025-01-15", 480)],
+        due_hours=10.0,
+        horizon_start=date(2025, 1, 1),
+        horizon_end=date(2025, 1, 31),
+        final_balance_weight=weight,
+        full_day_hours_by_role={"INFERMIERE": 8.0},
+    )
+
+    artifacts = build_model(context)
+    assert len(artifacts.final_hour_balance_abs) == 1
+    final_abs = next(iter(artifacts.final_hour_balance_abs.values()))
+
+    model_proto = artifacts.model.Proto()
+    target_index = next(
+        idx
+        for idx, variable in enumerate(model_proto.variables)
+        if variable.name == final_abs.Name()
+    )
+
+    coeff_value = None
+    for var_ref, coeff in zip(model_proto.objective.vars, model_proto.objective.coeffs, strict=False):
+        if var_ref == target_index:
+            coeff_value = coeff
+            break
+
+    expected_coeff = int(
+        round((weight * 1.5 / (8.0 * 60.0)) * DUE_HOUR_OBJECTIVE_SCALE)
+    )
+    assert coeff_value == expected_coeff
