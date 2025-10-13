@@ -895,6 +895,46 @@ def _extract_employee_hour_params(
             "month_hours_cap_h",
         ])
 
+        max_week_minutes: int | None = None
+        if max_week_hours is not None:
+            try:
+                max_week_minutes = int(round(max_week_hours * 60))
+            except (TypeError, ValueError):
+                max_week_minutes = None
+        else:
+            max_week_minutes_raw = _pick_float(
+                row,
+                [
+                    "max_week_minutes",
+                    "max_week_min",
+                ],
+            )
+            if max_week_minutes_raw is not None:
+                try:
+                    max_week_minutes = int(round(max_week_minutes_raw))
+                except (TypeError, ValueError):
+                    max_week_minutes = None
+
+        max_month_minutes: int | None = None
+        if max_month_hours is not None:
+            try:
+                max_month_minutes = int(round(max_month_hours * 60))
+            except (TypeError, ValueError):
+                max_month_minutes = None
+        else:
+            max_month_minutes_raw = _pick_float(
+                row,
+                [
+                    "max_month_minutes",
+                    "max_month_min",
+                ],
+            )
+            if max_month_minutes_raw is not None:
+                try:
+                    max_month_minutes = int(round(max_month_minutes_raw))
+                except (TypeError, ValueError):
+                    max_month_minutes = None
+
         max_balance_delta = _pick_float(
             row,
             [
@@ -916,8 +956,8 @@ def _extract_employee_hour_params(
 
         params[emp_idx] = {
             "due_minutes": int(round(due_hours * 60)) if due_hours is not None else None,
-            "max_week_minutes": int(round(max_week_hours * 60)) if max_week_hours is not None else None,
-            "max_month_minutes": int(round(max_month_hours * 60)) if max_month_hours is not None else None,
+            "max_week_minutes": max_week_minutes,
+            "max_month_minutes": max_month_minutes,
             "max_balance_delta_minutes": max_balance_delta_minutes,
         }
 
@@ -2451,7 +2491,7 @@ def _build_weekend_fairness_objective_terms(
             history_value = history_counts.get(emp_idx, 0)
             planned_vars = [
                 assign_vars[(emp_idx, slot_idx)]
-                for slot_idx in weekend_slot_indices
+                for slot_idx in weekend_slots_for_dept
                 if (emp_idx, slot_idx) in assign_vars
             ]
             eligible_count = len(planned_vars)
@@ -2478,7 +2518,7 @@ def _build_weekend_fairness_objective_terms(
             history_value = history_counts.get(emp_idx, 0)
             upper_bound = employee_upper.get(emp_idx, 0)
             if upper_bound <= history_value:
-                upper_bound = history_value + len(weekend_slot_indices)
+                upper_bound = history_value + len(weekend_slots_for_dept)
 
             deviation_upper = total_weight * max(upper_bound, 0)
             deviation_var = model.NewIntVar(
@@ -2497,10 +2537,7 @@ def _build_weekend_fairness_objective_terms(
 
         penalty_expr = sum(penalty_terms)
 
-        coeff_float = (
-            gamma * WEEKEND_FAIRNESS_OBJECTIVE_SCALE / float(total_weight)
-        )
-        coeff = int(round(coeff_float))
+        coeff = int(round(gamma * WEEKEND_FAIRNESS_OBJECTIVE_SCALE))
         if coeff <= 0:
             continue
 

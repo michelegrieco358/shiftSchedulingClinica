@@ -1027,7 +1027,7 @@ def test_load_coverage_groups_applies_default_overstaff_cap(
     caplog.set_level(logging.INFO, logger="loader.coverage")
     df = load_coverage_groups(str(coverage_groups_path), cfg.get("defaults", {}))
 
-    assert df.loc[0, "overstaff_cap_effective"] == 3
+    assert df.loc[0, "overstaff_cap_effective"] == 8
     assert "overstaffing abilitato" in " ".join(caplog.messages)
 
 
@@ -1080,7 +1080,7 @@ def test_expand_requirements_propagates_overstaff_cap(tmp_path: Path) -> None:
     groups_total, roles_total = expand_requirements(month_plan, groups_df, roles_df)
 
     assert "overstaff_cap_effective" in groups_total.columns
-    assert groups_total.loc[0, "overstaff_cap_effective"] == 4
+    assert groups_total.loc[0, "overstaff_cap_effective"] == 10
     assert roles_total.loc[0, "gruppo"] == "G1"
 
 

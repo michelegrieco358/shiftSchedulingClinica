@@ -137,7 +137,7 @@ def test_weekend_fairness_adds_objective_terms() -> None:
 
     assert len(fairness_terms) == 2
 
-    expected_coeff = int(round(1.5 * WEEKEND_FAIRNESS_OBJECTIVE_SCALE / 2))
+    expected_coeff = int(round(1.5 * WEEKEND_FAIRNESS_OBJECTIVE_SCALE))
     assert expected_coeff > 0
     assert all(coeff == expected_coeff for _, coeff in fairness_terms)
     assert {name for name, _ in fairness_terms} == {
