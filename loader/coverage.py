@@ -86,12 +86,12 @@ def load_coverage_groups(path: str, defaults: dict[str, object]) -> pd.DataFrame
 
     if overstaff_enabled:
         logger.info(
-            "coverage_groups: overstaffing abilitato (tetto predefinito = %s)",
+            "coverage_groups: overstaffing abilitato (extra predefinito = %s)",
             group_cap_default,
         )
     else:
         logger.info(
-            "coverage_groups: overstaffing disabilitato globalmente (tetto = 0)"
+            "coverage_groups: overstaffing disabilitato globalmente (tetto = total_staff)"
         )
 
     df = df.assign(
@@ -146,8 +146,20 @@ def load_coverage_groups(path: str, defaults: dict[str, object]) -> pd.DataFrame
         total = int(row["total_staff"])
         raw_value = row["overstaff_cap"]
 
+        base_cap = total
+
         if not overstaff_enabled:
-            return 0
+            if raw_value not in (None, ""):
+                logger.info(
+                    "coverage_groups.csv: overstaff_cap indicato ma overstaffing disabilitato (%s) per %s/%s/%s/%s: uso total_staff=%s",
+                    raw_value,
+                    row["coverage_code"],
+                    row["shift_code"],
+                    row["reparto_id"],
+                    row["gruppo"],
+                    base_cap,
+                )
+            return base_cap
 
         cap_value: int | None = None
         if raw_value not in (None, ""):
@@ -166,7 +178,19 @@ def load_coverage_groups(path: str, defaults: dict[str, object]) -> pd.DataFrame
                 cap_value = None
 
         if cap_value is None:
-            cap_value = group_cap_default
+            cap_value = total + group_cap_default
+
+        if cap_value < total:
+            logger.warning(
+                "coverage_groups.csv: overstaff_cap %s inferiore a total_staff (%s) per %s/%s/%s/%s: elevato a total_staff",
+                cap_value,
+                total,
+                row["coverage_code"],
+                row["shift_code"],
+                row["reparto_id"],
+                row["gruppo"],
+            )
+            cap_value = total
 
         if cap_value < 0:
             logger.warning(
