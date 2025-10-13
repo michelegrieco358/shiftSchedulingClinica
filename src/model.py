@@ -5,6 +5,7 @@ from calendar import monthrange
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+import math
 from typing import Any, Dict, Iterable, List, Mapping
 
 DUE_HOUR_OBJECTIVE_SCALE = 1000
@@ -14,6 +15,8 @@ NIGHT_TO_DAY_OBJECTIVE_SCALE = 1000
 REST11_OBJECTIVE_SCALE = 1000
 WEEKLY_REST_OBJECTIVE_SCALE = 1000
 CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
+NIGHT_FAIRNESS_OBJECTIVE_SCALE = 1
+NIGHT_FAIRNESS_WEIGHT_SCALE = 100
 
 import pandas as pd
 
@@ -311,6 +314,9 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     )
     objective_terms.extend(
         _build_night_to_day_objective_terms(night_to_day_info)
+    )
+    objective_terms.extend(
+        _build_night_fairness_objective_terms(model, context, bundle, night_info)
     )
     objective_terms.extend(
         _build_rest11_objective_terms(rest_info["pair_violations"], rest11_weight)
@@ -2199,6 +2205,121 @@ def _build_night_to_day_objective_terms(
     return [var * coeff for var in violations.values()]
 
 
+def _build_night_fairness_objective_terms(
+    model: cp_model.CpModel,
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    night_info: Mapping[str, Any],
+) -> List[cp_model.LinearExpr]:
+    night_by_day: Mapping[tuple[int, int], cp_model.BoolVar] = night_info.get("night_by_day", {})  # type: ignore[assignment]
+    if not night_by_day:
+        return []
+
+    employees = context.employees
+    if employees is None or employees.empty:
+        return []
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return []
+
+    num_days = int(bundle.get("num_days", 0))
+    if num_days <= 0:
+        return []
+
+    cfg = context.cfg if isinstance(context.cfg, Mapping) else {}
+    night_codes = _resolve_night_codes(cfg)
+    if not night_codes:
+        return []
+
+    history_counts = _count_history_night_totals(context.history, night_codes, eid_of)
+    emp_to_dept = _build_employee_reparto_index(employees, bundle)
+    if not emp_to_dept:
+        return []
+
+    night_eligible = _build_employee_night_eligibility_map(employees, eid_of)
+    weight_float_map = _build_employee_night_weight_map(employees, eid_of)
+    weight_int_map = _convert_weight_map_to_int(weight_float_map)
+
+    dept_members: dict[str, list[int]] = {}
+    for emp_idx, dept in emp_to_dept.items():
+        if not dept:
+            continue
+        if not night_eligible.get(emp_idx, True):
+            continue
+        dept_members.setdefault(dept, []).append(emp_idx)
+
+    if not dept_members:
+        return []
+
+    objective_terms: list[cp_model.LinearExpr] = []
+    for dept, members in dept_members.items():
+        if len(members) < 2:
+            continue
+
+        positive_members = [emp for emp in members if weight_int_map.get(emp, 0) > 0]
+        if len(positive_members) < 2:
+            continue
+
+        weights = {emp: weight_int_map.get(emp, 0) for emp in positive_members}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            continue
+
+        max_history = max(history_counts.get(emp, 0) for emp in positive_members)
+        max_total = max_history + num_days
+        weighted_sum_max = sum(weights[emp] * max_total for emp in positive_members)
+        if weighted_sum_max <= 0:
+            continue
+
+        dept_slug = _sanitize_identifier(dept)
+        total_var = model.NewIntVar(0, weighted_sum_max, f"night_fair_total_{dept_slug}")
+
+        total_expr_terms: list[cp_model.LinearExpr] = []
+        penalty_terms: list[cp_model.LinearExpr] = []
+
+        for emp_idx in positive_members:
+            history_value = history_counts.get(emp_idx, 0)
+            planned_vars = [
+                night_by_day[(emp_idx, day_idx)]
+                for day_idx in range(num_days)
+                if (emp_idx, day_idx) in night_by_day
+            ]
+            if planned_vars:
+                planned_sum: cp_model.LinearExpr = sum(planned_vars)
+            else:
+                planned_sum = 0
+
+            total_expr = planned_sum + history_value
+            weight = weights[emp_idx]
+            total_expr_terms.append(weight * total_expr)
+
+            max_total_emp = history_value + num_days
+            deviation_var = model.NewIntVar(
+                0,
+                total_weight * max_total_emp,
+                f"night_fair_dev_e{emp_idx}_{dept_slug}",
+            )
+
+            scaled_total_expr = total_weight * total_expr
+            model.Add(deviation_var >= scaled_total_expr - total_var)
+            model.Add(deviation_var >= total_var - scaled_total_expr)
+
+            penalty_terms.append(weight * deviation_var)
+
+        if not total_expr_terms or not penalty_terms:
+            continue
+
+        model.Add(total_var == sum(total_expr_terms))
+
+        penalty_expr = sum(penalty_terms)
+        if NIGHT_FAIRNESS_OBJECTIVE_SCALE != 1:
+            penalty_expr = NIGHT_FAIRNESS_OBJECTIVE_SCALE * penalty_expr
+        objective_terms.append(penalty_expr)
+
+    return objective_terms
+
+
 def _build_rest11_objective_terms(
     violations: Mapping[tuple[int, int, int], cp_model.BoolVar],
     weight: float,
@@ -2347,6 +2468,174 @@ def _build_employee_reparto_index(
             result[emp_idx] = reparto_value
 
     return result
+
+
+def _count_history_night_totals(
+    history: pd.DataFrame,
+    night_codes: set[str],
+    eid_of: Mapping[str, int],
+) -> dict[int, int]:
+    if history is None or history.empty or not night_codes:
+        return {}
+
+    id_col = None
+    for candidate in ("employee_id", "dipendente_id", "resource_id", "matricola"):
+        if candidate in history.columns:
+            id_col = candidate
+            break
+    if id_col is None:
+        return {}
+
+    shift_col = None
+    for candidate in ("turno", "shift_code", "shift", "state", "codice_turno"):
+        if candidate in history.columns:
+            shift_col = candidate
+            break
+    if shift_col is None:
+        return {}
+
+    df = history.loc[:, [id_col, shift_col]].copy()
+    df[id_col] = df[id_col].astype(str).str.strip()
+    df[shift_col] = df[shift_col].astype(str).str.strip().str.upper()
+    df = df[df[shift_col].isin({code.upper() for code in night_codes})]
+    if df.empty:
+        return {}
+
+    counts = df.groupby(id_col)[shift_col].count()
+    result: dict[int, int] = {}
+    for emp_id, count in counts.items():
+        emp_idx = eid_of.get(str(emp_id).strip())
+        if emp_idx is not None:
+            result[emp_idx] = int(count)
+    return result
+
+
+def _build_employee_night_eligibility_map(
+    employees: pd.DataFrame, eid_of: Mapping[str, int]
+) -> dict[int, bool]:
+    if employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    id_series = employees["employee_id"].astype(str).str.strip()
+    eligibility_col = None
+    for candidate in (
+        "can_work_night",
+        "night_eligible",
+        "abilitato_notte",
+        "puo_notte",
+    ):
+        if candidate in employees.columns:
+            eligibility_col = candidate
+            break
+
+    result: dict[int, bool] = {}
+    if eligibility_col is None:
+        for emp_id in id_series:
+            emp_idx = eid_of.get(emp_id)
+            if emp_idx is not None:
+                result[emp_idx] = True
+        return result
+
+    values = employees[eligibility_col]
+    for emp_id, raw_value in zip(id_series, values, strict=False):
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+        result[emp_idx] = _parse_bool(raw_value, default=False)
+    return result
+
+
+def _build_employee_night_weight_map(
+    employees: pd.DataFrame, eid_of: Mapping[str, int]
+) -> dict[int, float]:
+    if employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    candidate_cols = [
+        "night_weight",
+        "night_quota",
+        "night_fte",
+        "night_share",
+        "night_fraction",
+        "night_capacity",
+        "night_ratio",
+        "fte",
+        "FTE",
+    ]
+
+    weight_series = None
+    for col in candidate_cols:
+        if col in employees.columns:
+            numeric = pd.to_numeric(employees[col], errors="coerce")
+            if numeric.notna().any():
+                weight_series = numeric.fillna(0.0)
+                break
+
+    if weight_series is None:
+        weight_series = pd.Series(1.0, index=employees.index)
+
+    result: dict[int, float] = {}
+    id_series = employees["employee_id"].astype(str).str.strip()
+    for emp_id, value in zip(id_series, weight_series, strict=False):
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+        weight_value = float(value)
+        if not math.isfinite(weight_value):
+            weight_value = 0.0
+        result[emp_idx] = max(weight_value, 0.0)
+    return result
+
+
+def _convert_weight_map_to_int(weight_map: Mapping[int, float]) -> dict[int, int]:
+    result: dict[int, int] = {}
+    positives: list[int] = []
+    for emp_idx, value in weight_map.items():
+        if value <= 0:
+            result[emp_idx] = 0
+            continue
+        scaled = int(round(value * NIGHT_FAIRNESS_WEIGHT_SCALE))
+        if scaled <= 0:
+            scaled = 1
+        result[emp_idx] = scaled
+        positives.append(scaled)
+
+    if positives:
+        gcd_value = positives[0]
+        for item in positives[1:]:
+            gcd_value = math.gcd(gcd_value, item)
+        if gcd_value > 1:
+            for emp_idx, value in list(result.items()):
+                if value > 0:
+                    result[emp_idx] = value // gcd_value
+
+    return result
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "t", "yes", "y", "si", "s", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _sanitize_identifier(value: str) -> str:
+    if not value:
+        return "dept"
+    cleaned = ''.join(ch if ch.isalnum() else '_' for ch in str(value))
+    cleaned = cleaned.strip('_')
+    return cleaned or "dept"
 
 
 def _build_slot_night_flags(
