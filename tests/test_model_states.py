@@ -15,6 +15,9 @@ def _make_basic_context(
     slots: pd.DataFrame | None = None,
     history: pd.DataFrame | None = None,
     calendar_dates: list[pd.Timestamp] | None = None,
+    cfg_extra: dict | None = None,
+    preassignments_df: pd.DataFrame | None = None,
+    preassignment_pairs: list[tuple[int, int, str]] | None = None,
 ) -> ModelContext:
     employees = pd.DataFrame({"employee_id": ["E1"], "role": ["INFERMIERE"]})
 
@@ -63,9 +66,17 @@ def _make_basic_context(
 
     empty = pd.DataFrame()
     history_df = history if history is not None else empty
+    if preassignments_df is None:
+        preassignments = pd.DataFrame(columns=["employee_id", "data", "state_code"])
+    else:
+        preassignments = preassignments_df.copy()
+
+    bundle.setdefault("preassignment_pairs", preassignment_pairs or [])
+
+    cfg = cfg_extra.copy() if isinstance(cfg_extra, dict) else {}
 
     return ModelContext(
-        cfg={},
+        cfg=cfg,
         employees=employees,
         slots=slots,
         coverage_roles=empty,
@@ -78,6 +89,7 @@ def _make_basic_context(
         locks_forbid=empty,
         gap_pairs=empty,
         calendars=calendar,
+        preassignments=preassignments,
         bundle=bundle,
     )
 
@@ -159,6 +171,47 @@ def test_state_zero_if_no_matching_slot() -> None:
     solver = _solve_model(artifacts)
 
     assert solver.Value(artifacts.state_vars[(0, 0, "P")]) == 0
+
+
+def test_preassignment_penalty_prefers_previous_state() -> None:
+    leaves = pd.DataFrame(columns=["employee_id", "date"])
+    slots = pd.DataFrame(
+        {
+            "slot_id": [1, 2],
+            "shift_code": ["M", "P"],
+            "date": [pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-01")],
+        }
+    )
+    pre_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "data": ["2025-01-01"],
+            "state_code": ["M"],
+        }
+    )
+
+    context = _make_basic_context(
+        leaves,
+        slots=slots,
+        calendar_dates=[pd.Timestamp("2025-01-01")],
+        cfg_extra={"preassignments": {"change_penalty_weight": 5.0}},
+        preassignments_df=pre_df,
+        preassignment_pairs=[(0, 0, "M")],
+    )
+    artifacts = build_model(context)
+
+    slot_index = artifacts.slot_index
+    m_slot = slot_index[1]
+    p_slot = slot_index[2]
+    assign_vars = artifacts.assign_vars
+
+    artifacts.model.Add(assign_vars[(0, m_slot)] + assign_vars[(0, p_slot)] == 1)
+
+    solver = _solve_model(artifacts)
+
+    assert solver.Value(assign_vars[(0, m_slot)]) == 1
+    assert solver.Value(assign_vars[(0, p_slot)]) == 0
+    assert solver.Value(artifacts.state_vars[(0, 0, "M")]) == 1
 
 
 def test_sn_requires_previous_night_history() -> None:

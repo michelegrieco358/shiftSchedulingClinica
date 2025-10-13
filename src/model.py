@@ -19,6 +19,7 @@ NIGHT_FAIRNESS_OBJECTIVE_SCALE = 1
 NIGHT_FAIRNESS_WEIGHT_SCALE = 100
 WEEKEND_FAIRNESS_OBJECTIVE_SCALE = 1000
 WEEKEND_FAIRNESS_WEIGHT_SCALE = 100
+PREASSIGNMENT_OBJECTIVE_SCALE = 1000
 
 import pandas as pd
 
@@ -59,6 +60,7 @@ class ModelContext:
     locks_forbid: pd.DataFrame
     gap_pairs: pd.DataFrame
     calendars: pd.DataFrame
+    preassignments: pd.DataFrame
     bundle: Mapping[str, object]
 
     def employees_for_slot(self, slot_id: int) -> Iterable[str]:
@@ -335,6 +337,9 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     )
     objective_terms.extend(
         _build_cross_assignment_objective_terms(context, bundle, assign_vars)
+    )
+    objective_terms.extend(
+        _build_preassignment_objective_terms(context, bundle, state_vars)
     )
 
     if objective_terms:
@@ -2612,6 +2617,44 @@ def _build_cross_assignment_objective_terms(
     return [sum(cross_assignments) * coeff]
 
 
+def _build_preassignment_objective_terms(
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    state_vars: Mapping[tuple[int, int, str], cp_model.IntVar],
+) -> List[cp_model.LinearExpr]:
+    pairs = bundle.get("preassignment_pairs", [])
+    if not isinstance(pairs, list) or not pairs:
+        return []
+
+    weight = _resolve_preassignment_penalty_weight(
+        context.cfg if isinstance(context.cfg, Mapping) else None
+    )
+    if weight <= 0:
+        return []
+
+    coeff = int(round(weight * PREASSIGNMENT_OBJECTIVE_SCALE))
+    if coeff <= 0:
+        coeff = 1
+
+    terms: list[cp_model.LinearExpr] = []
+    for entry in pairs:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 3:
+            continue
+        emp_idx, day_idx, state_code = entry
+        try:
+            emp_idx_int = int(emp_idx)
+            day_idx_int = int(day_idx)
+        except (TypeError, ValueError):
+            continue
+        key = (emp_idx_int, day_idx_int, str(state_code).strip().upper())
+        var = state_vars.get(key)
+        if var is None:
+            continue
+        terms.append((1 - var) * coeff)
+
+    return terms
+
+
 def _build_slot_reparto_index(
     context: ModelContext, bundle: Mapping[str, object]
 ) -> dict[int, str]:
@@ -3200,6 +3243,7 @@ def _resolve_weekly_rest_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
         return direct
 
     defaults = cfg.get("defaults")
+    fallback = None
     if isinstance(defaults, Mapping):
         fallback = _extract(defaults)
         if fallback is not None:
@@ -3208,6 +3252,40 @@ def _resolve_weekly_rest_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
         fallback = _extract(rest_days)
         if fallback is not None:
             return fallback
+
+    return 0.0
+
+
+def _resolve_preassignment_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+
+    def _extract(mapping: Mapping[str, Any] | None) -> float | None:
+        if not isinstance(mapping, Mapping):
+            return None
+        for key in ("change_penalty_weight", "penalty_weight", "weight"):
+            raw = mapping.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+        return None
+
+    direct = _extract(cfg.get("preassignments"))
+    if direct is not None:
+        return direct
+
+    fallback = cfg.get("preassignments_penalty_weight")
+    if fallback is not None:
+        try:
+            value = float(fallback)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(value, 0.0)
 
     return 0.0
 
@@ -4663,6 +4741,7 @@ def build_context_from_data(data: Any, bundle: Mapping[str, object]) -> ModelCon
     locks_forbid = _optional_frame(data, "locks_forbid", "locks_forbid_df")
     gap_pairs = _optional_frame(data, "gaps", "gap_pairs_df")
     calendars = _require_frame(data, "calendar", "calendars", "calendar_df")
+    preassignments = _optional_frame(data, "preassignments", "preassignments_df")
 
     return ModelContext(
         cfg=dict(cfg),
@@ -4678,5 +4757,6 @@ def build_context_from_data(data: Any, bundle: Mapping[str, object]) -> ModelCon
         locks_forbid=locks_forbid,
         gap_pairs=gap_pairs,
         calendars=calendars,
+        preassignments=preassignments if preassignments is not None else pd.DataFrame(),
         bundle=bundle,
     )

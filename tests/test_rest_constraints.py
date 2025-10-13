@@ -139,6 +139,7 @@ def _make_rest_context(
     }
 
     history_df = pd.DataFrame(history_rows) if history_rows else empty_df
+    preassignments = pd.DataFrame(columns=["employee_id", "data", "state_code"])
 
     return ModelContext(
         cfg=cfg,
@@ -154,6 +155,7 @@ def _make_rest_context(
         locks_forbid=empty_df,
         gap_pairs=gap_pairs,
         calendars=calendar_df,
+        preassignments=preassignments,
         bundle=bundle,
     )
 

@@ -502,6 +502,7 @@ def build_all(dfs: dict, cfg: dict) -> dict:
     df_role_requirements = _pick_frame(dfs, "groups_role_min_expanded")
     df_history = _pick_frame(dfs, "history", "history_df")
     df_leaves_days = _pick_frame(dfs, "leaves_days", "leaves_days_df")
+    df_preassignments = _pick_frame(dfs, "preassignments", "preassignments_df")
 
     if df_employees is None or df_slots is None:
         raise ValueError("Mancano DataFrame essenziali: employees o shift_slots")
@@ -597,6 +598,44 @@ def build_all(dfs: dict, cfg: dict) -> dict:
         slot_days_touched[sid] = [did_of[d] for d in days if d in did_of]
 
     bundle["slot_days_touched"] = slot_days_touched
+
+    preassignment_pairs: list[tuple[int, int, str]] = []
+    if df_preassignments is not None and not df_preassignments.empty:
+        work = df_preassignments.copy()
+        if "employee_id" in work.columns and "state_code" in work.columns:
+            work["employee_id"] = work["employee_id"].astype(str).str.strip()
+            work["state_code"] = work["state_code"].astype(str).str.strip().str.upper()
+            if "date" in work.columns:
+                dates = pd.to_datetime(work["date"], errors="coerce")
+            elif "data_dt" in work.columns:
+                dates = pd.to_datetime(work["data_dt"], errors="coerce")
+            else:
+                dates = pd.Series([pd.NaT] * len(work))
+            work = work.assign(_date=dates.dt.date)
+            work = work.loc[work["_date"].notna()]
+            work = work.loc[
+                work["state_code"].ne("")
+                & work["employee_id"].ne("")
+            ]
+            work = work.loc[
+                work["employee_id"].isin(df_employees["employee_id"].astype(str).str.strip())
+            ]
+
+            seen_keys: set[tuple[int, int]] = set()
+            for employee_id, day_value, state in work.loc[
+                :, ["employee_id", "_date", "state_code"]
+            ].itertuples(index=False):
+                emp_idx = eid_of.get(employee_id)
+                day_idx = did_of.get(day_value)
+                if emp_idx is None or day_idx is None:
+                    continue
+                key = (emp_idx, day_idx)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                preassignment_pairs.append((emp_idx, day_idx, state))
+
+    bundle["preassignment_pairs"] = preassignment_pairs
 
 
     # (3) Idoneita e coverage

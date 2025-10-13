@@ -8,6 +8,9 @@ rest_rules:
   rest11_penalty_weight: 1.0
   weekly_rest_penalty_weight: 1.0
 
+preassignments:
+  change_penalty_weight: 5.0
+
 defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
   departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
