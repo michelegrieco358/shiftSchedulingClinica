@@ -320,3 +320,65 @@ def test_history_night_limits_first_day_states(state_code: str) -> None:
     status = solver.Solve(artifacts.model)
 
     assert status == cp_model.INFEASIBLE
+
+
+def test_cross_assignment_limit_zero_blocks_cross_shift() -> None:
+    leaves = pd.DataFrame(columns=["employee_id", "date"])
+    slots = pd.DataFrame(
+        {
+            "slot_id": [1],
+            "shift_code": ["M"],
+            "date": [pd.Timestamp("2025-01-01")],
+            "reparto_id": ["B"],
+        }
+    )
+
+    context = _make_basic_context(
+        leaves,
+        slots=slots,
+        cfg_extra={"cross": {"penalty_weight": 0.0}},
+    )
+
+    context.employees["reparto_id"] = ["A"]
+    context.employees["cross_max_shifts_month"] = [0]
+
+    artifacts = build_model(context)
+    solver = _solve_model(artifacts)
+
+    slot_idx = context.bundle["sid_of"][1]
+    assert solver.Value(artifacts.assign_vars[(0, slot_idx)]) == 0
+
+
+def test_cross_assignment_limit_enforced_cap() -> None:
+    leaves = pd.DataFrame(columns=["employee_id", "date"])
+    slots = pd.DataFrame(
+        {
+            "slot_id": [1, 2],
+            "shift_code": ["M", "P"],
+            "date": [pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-02")],
+            "reparto_id": ["B", "B"],
+        }
+    )
+
+    context = _make_basic_context(
+        leaves,
+        slots=slots,
+        cfg_extra={"cross": {"penalty_weight": 0.0}},
+    )
+
+    context.employees["reparto_id"] = ["A"]
+    context.employees["cross_max_shifts_month"] = [1]
+
+    artifacts = build_model(context)
+
+    sid_of = context.bundle["sid_of"]
+    first_slot = sid_of[1]
+    second_slot = sid_of[2]
+
+    artifacts.model.Add(artifacts.assign_vars[(0, first_slot)] == 1)
+    artifacts.model.Add(artifacts.assign_vars[(0, second_slot)] == 1)
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(artifacts.model)
+
+    assert status == cp_model.INFEASIBLE
