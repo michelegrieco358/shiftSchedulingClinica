@@ -42,6 +42,7 @@ from .employees import (
 from .gap_pairs import build_gap_pairs
 from .history import load_history
 from .leaves import load_leaves
+from .preassignments import load_preassignments
 from .locks import load_locks, split_locks, validate_locks
 from .shifts import (
     build_shift_slots,
@@ -75,6 +76,7 @@ class LoadedData:
     locks_df: pd.DataFrame
     locks_must_df: pd.DataFrame
     locks_forbid_df: pd.DataFrame
+    preassignments_df: pd.DataFrame
     flags: dict[str, Any]
 
 
@@ -232,6 +234,11 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         cross_reparto_enabled=bool(cross_reparto_cfg),
     )
     locks_must_df, locks_forbid_df = split_locks(locks_df)
+    preassignments_df = load_preassignments(
+        os.path.join(data_dir, "preassignments.csv"),
+        employees_df,
+        calendar_df,
+    )
 
     return LoadedData(
         cfg=cfg,
@@ -255,6 +262,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         locks_df=locks_df,
         locks_must_df=locks_must_df,
         locks_forbid_df=locks_forbid_df,
+        preassignments_df=preassignments_df,
         flags=absences_flags,
     )
 
@@ -269,6 +277,7 @@ __all__ = [
     "get_absence_hours_from_config",
     "enrich_shift_slots_calendar",
     "load_absences",
+    "load_preassignments",
     "load_locks",
     "split_locks",
     "validate_locks",

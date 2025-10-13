@@ -97,6 +97,8 @@ def _make_context(slot_dates: list[date], fairness_weight: float) -> ModelContex
         "slot_date2": slot_date2,
     }
 
+    preassignments = pd.DataFrame(columns=["employee_id", "data", "state_code"])
+
     return ModelContext(
         cfg=cfg,
         employees=employees,
@@ -111,6 +113,7 @@ def _make_context(slot_dates: list[date], fairness_weight: float) -> ModelContex
         locks_forbid=empty_df,
         gap_pairs=empty_df,
         calendars=calendar_df,
+        preassignments=preassignments,
         bundle=bundle,
     )
 

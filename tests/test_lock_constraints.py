@@ -60,6 +60,8 @@ def _make_lock_context(
         else pd.DataFrame(columns=["employee_id", "slot_id"])
     )
 
+    preassignments = pd.DataFrame(columns=["employee_id", "data", "state_code"])
+
     return ModelContext(
         cfg={},
         employees=employees,
@@ -74,6 +76,7 @@ def _make_lock_context(
         locks_forbid=locks_forbid_df,
         gap_pairs=empty,
         calendars=calendar,
+        preassignments=preassignments,
         bundle=bundle,
     )
 

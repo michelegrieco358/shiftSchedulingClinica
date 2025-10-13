@@ -184,6 +184,8 @@ def _make_context(
         "slot_reparto": slot_reparto,
     }
 
+    preassignments = pd.DataFrame(columns=["employee_id", "data", "state_code"])
+
     return ModelContext(
         cfg=cfg,
         employees=employees,
@@ -198,6 +200,7 @@ def _make_context(
         locks_forbid=empty_df,
         gap_pairs=empty_df,
         calendars=calendar_df,
+        preassignments=preassignments,
         bundle=bundle,
     )
 

@@ -31,6 +31,7 @@ from loader.employees import (
     resolve_fulltime_baseline,
 )
 from loader.leaves import load_leaves
+from loader.preassignments import load_preassignments
 from loader.shifts import (
     build_shift_slots,
     load_shift_role_eligibility,
@@ -1082,6 +1083,25 @@ def test_expand_requirements_propagates_overstaff_cap(tmp_path: Path) -> None:
     assert "overstaff_cap_effective" in groups_total.columns
     assert groups_total.loc[0, "overstaff_cap_effective"] == 10
     assert roles_total.loc[0, "gruppo"] == "G1"
+
+
+def test_load_preassignments_ignores_out_of_horizon(tmp_path: Path) -> None:
+    calendar = build_calendar(date(2025, 11, 15), date(2025, 11, 16))
+    employees = pd.DataFrame({"employee_id": ["E1"]})
+    pre_df = pd.DataFrame(
+        {
+            "employee_id": ["E1", "E1"],
+            "data": ["2025-11-14", "2025-11-15"],
+            "state_code": ["M", "P"],
+        }
+    )
+    path = tmp_path / "preassignments.csv"
+    pre_df.to_csv(path, index=False)
+
+    loaded = load_preassignments(str(path), employees, calendar)
+
+    assert list(loaded["data"]) == ["2025-11-15"]
+    assert list(loaded["state_code"]) == ["P"]
 
 
 def test_get_absence_hours_from_config_and_load_all_smoke(tmp_path: Path) -> None:

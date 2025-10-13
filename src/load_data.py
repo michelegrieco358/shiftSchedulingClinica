@@ -42,6 +42,7 @@ _ALIAS_MAP = {
     "leaves": "leaves_df",
     "leaves_days": "leaves_days_df",
     "gaps": "gap_pairs_df",
+    "preassignments": "preassignments_df",
 }
 
 
