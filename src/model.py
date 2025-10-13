@@ -17,6 +17,8 @@ WEEKLY_REST_OBJECTIVE_SCALE = 1000
 CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
 NIGHT_FAIRNESS_OBJECTIVE_SCALE = 1
 NIGHT_FAIRNESS_WEIGHT_SCALE = 100
+WEEKEND_FAIRNESS_OBJECTIVE_SCALE = 1000
+WEEKEND_FAIRNESS_WEIGHT_SCALE = 100
 
 import pandas as pd
 
@@ -317,6 +319,11 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     )
     objective_terms.extend(
         _build_night_fairness_objective_terms(model, context, bundle, night_info)
+    )
+    objective_terms.extend(
+        _build_weekend_fairness_objective_terms(
+            model, context, bundle, assign_vars
+        )
     )
     objective_terms.extend(
         _build_rest11_objective_terms(rest_info["pair_violations"], rest11_weight)
@@ -797,6 +804,36 @@ def _pick_float_from_mapping(
             except Exception:
                 continue
     return None
+
+
+def _resolve_weekend_fairness_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+
+    fairness_cfg = cfg.get("fairness") if isinstance(cfg.get("fairness"), Mapping) else None
+    candidates = [
+        "weekend_penalty_weight",
+        "weekend_fairness_weight",
+        "weekend_weight",
+        "weekend_gamma",
+        "gamma_weekend",
+    ]
+
+    value = _pick_float_from_mapping(fairness_cfg, candidates)
+    if value is None:
+        value = _pick_float_from_mapping(
+            cfg,
+            [
+                "weekend_penalty_weight",
+                "weekend_fairness_weight",
+                "weekend_gamma",
+            ],
+        )
+
+    if value is None:
+        return 0.0
+
+    return max(float(value), 0.0)
 
 
 def _extract_employee_hour_params(
@@ -2320,6 +2357,158 @@ def _build_night_fairness_objective_terms(
     return objective_terms
 
 
+def _build_weekend_fairness_objective_terms(
+    model: cp_model.CpModel,
+    context: ModelContext,
+    bundle: Mapping[str, object],
+    assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
+) -> List[cp_model.LinearExpr]:
+    if not assign_vars:
+        return []
+
+    gamma = _resolve_weekend_fairness_weight(
+        context.cfg if isinstance(context.cfg, Mapping) else None
+    )
+    if gamma <= 0:
+        return []
+
+    employees = context.employees
+    if employees is None or employees.empty:
+        return []
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return []
+
+    slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
+    if not slot_date2:
+        return []
+
+    weekend_day_flags = _build_weekend_or_holiday_day_flags(context, bundle)
+    if not weekend_day_flags:
+        return []
+
+    weekend_slot_indices = sorted(
+        {
+            slot_idx
+            for slot_idx, day_idx in slot_date2.items()
+            if weekend_day_flags.get(day_idx, False)
+        }
+    )
+    if not weekend_slot_indices:
+        return []
+
+    emp_to_dept = _build_employee_reparto_index(employees, bundle)
+    if not emp_to_dept:
+        return []
+
+    slot_reparto_map = _build_slot_reparto_index(context, bundle)
+    if not slot_reparto_map:
+        return []
+
+    weight_float_map = _build_employee_weekend_weight_map(employees, eid_of)
+    weight_int_map = _convert_weight_map_to_int(
+        weight_float_map, scale=WEEKEND_FAIRNESS_WEIGHT_SCALE
+    )
+
+    dept_members: dict[str, list[int]] = defaultdict(list)
+    for emp_idx, dept in emp_to_dept.items():
+        if not dept:
+            continue
+        dept_members[dept].append(emp_idx)
+
+    if not dept_members:
+        return []
+
+    weekend_slots_by_dept: dict[str, list[int]] = defaultdict(list)
+    for slot_idx in weekend_slot_indices:
+        dept = slot_reparto_map.get(slot_idx)
+        if dept:
+            weekend_slots_by_dept[dept].append(slot_idx)
+
+    history_counts = _count_history_weekend_totals(context.history, eid_of)
+
+    objective_terms: list[cp_model.LinearExpr] = []
+    for dept, members in dept_members.items():
+        weekend_slots_for_dept = weekend_slots_by_dept.get(dept, [])
+        if not weekend_slots_for_dept:
+            continue
+
+        positive_members = [emp for emp in members if weight_int_map.get(emp, 0) > 0]
+        if len(positive_members) < 2:
+            continue
+
+        weights = {emp: weight_int_map.get(emp, 0) for emp in positive_members}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            continue
+
+        weighted_terms: list[cp_model.LinearExpr] = []
+        employee_totals: dict[int, cp_model.LinearExpr] = {}
+        employee_upper: dict[int, int] = {}
+
+        for emp_idx in positive_members:
+            history_value = history_counts.get(emp_idx, 0)
+            planned_vars = [
+                assign_vars[(emp_idx, slot_idx)]
+                for slot_idx in weekend_slot_indices
+                if (emp_idx, slot_idx) in assign_vars
+            ]
+            eligible_count = len(planned_vars)
+            planned_sum: cp_model.LinearExpr
+            if planned_vars:
+                planned_sum = sum(planned_vars)
+            else:
+                planned_sum = 0
+
+            total_expr = planned_sum + history_value
+            employee_totals[emp_idx] = total_expr
+            employee_upper[emp_idx] = history_value + eligible_count
+            weighted_terms.append(weights[emp_idx] * total_expr)
+
+        if not weighted_terms:
+            continue
+
+        mean_expr = sum(weighted_terms)
+        dept_slug = _sanitize_identifier(dept)
+        penalty_terms: list[cp_model.LinearExpr] = []
+
+        for emp_idx in positive_members:
+            total_expr = employee_totals[emp_idx]
+            history_value = history_counts.get(emp_idx, 0)
+            upper_bound = employee_upper.get(emp_idx, 0)
+            if upper_bound <= history_value:
+                upper_bound = history_value + len(weekend_slot_indices)
+
+            deviation_upper = total_weight * max(upper_bound, 0)
+            deviation_var = model.NewIntVar(
+                0,
+                max(deviation_upper, 0),
+                f"weekend_fair_dev_e{emp_idx}_{dept_slug}",
+            )
+
+            model.Add(deviation_var >= total_weight * total_expr - mean_expr)
+            model.Add(deviation_var >= mean_expr - total_weight * total_expr)
+
+            penalty_terms.append(weights[emp_idx] * deviation_var)
+
+        if not penalty_terms:
+            continue
+
+        penalty_expr = sum(penalty_terms)
+
+        coeff_float = (
+            gamma * WEEKEND_FAIRNESS_OBJECTIVE_SCALE / float(total_weight)
+        )
+        coeff = int(round(coeff_float))
+        if coeff <= 0:
+            continue
+
+        objective_terms.append(penalty_expr * coeff)
+
+    return objective_terms
+
+
 def _build_rest11_objective_terms(
     violations: Mapping[tuple[int, int, int], cp_model.BoolVar],
     weight: float,
@@ -2545,23 +2734,15 @@ def _build_employee_night_eligibility_map(
     return result
 
 
-def _build_employee_night_weight_map(
-    employees: pd.DataFrame, eid_of: Mapping[str, int]
+def _build_employee_weight_map(
+    employees: pd.DataFrame,
+    eid_of: Mapping[str, int],
+    candidate_cols: Iterable[str],
+    *,
+    default_value: float = 1.0,
 ) -> dict[int, float]:
     if employees.empty or "employee_id" not in employees.columns:
         return {}
-
-    candidate_cols = [
-        "night_weight",
-        "night_quota",
-        "night_fte",
-        "night_share",
-        "night_fraction",
-        "night_capacity",
-        "night_ratio",
-        "fte",
-        "FTE",
-    ]
 
     weight_series = None
     for col in candidate_cols:
@@ -2572,7 +2753,7 @@ def _build_employee_night_weight_map(
                 break
 
     if weight_series is None:
-        weight_series = pd.Series(1.0, index=employees.index)
+        weight_series = pd.Series(default_value, index=employees.index)
 
     result: dict[int, float] = {}
     id_series = employees["employee_id"].astype(str).str.strip()
@@ -2587,14 +2768,50 @@ def _build_employee_night_weight_map(
     return result
 
 
-def _convert_weight_map_to_int(weight_map: Mapping[int, float]) -> dict[int, int]:
+def _build_employee_night_weight_map(
+    employees: pd.DataFrame, eid_of: Mapping[str, int]
+) -> dict[int, float]:
+    candidate_cols = [
+        "night_weight",
+        "night_quota",
+        "night_fte",
+        "night_share",
+        "night_fraction",
+        "night_capacity",
+        "night_ratio",
+        "fte",
+        "FTE",
+    ]
+
+    return _build_employee_weight_map(employees, eid_of, candidate_cols)
+
+
+def _build_employee_weekend_weight_map(
+    employees: pd.DataFrame, eid_of: Mapping[str, int]
+) -> dict[int, float]:
+    candidate_cols = [
+        "weekend_weight",
+        "weekend_quota",
+        "weekend_fairness_weight",
+        "weekend_fte",
+        "fairness_weight",
+        "fte",
+        "FTE",
+    ]
+
+    return _build_employee_weight_map(employees, eid_of, candidate_cols)
+
+
+def _convert_weight_map_to_int(
+    weight_map: Mapping[int, float], *, scale: int = NIGHT_FAIRNESS_WEIGHT_SCALE
+) -> dict[int, int]:
     result: dict[int, int] = {}
     positives: list[int] = []
     for emp_idx, value in weight_map.items():
         if value <= 0:
             result[emp_idx] = 0
             continue
-        scaled = int(round(value * NIGHT_FAIRNESS_WEIGHT_SCALE))
+        scaled = int(round(value * scale))
         if scaled <= 0:
             scaled = 1
         result[emp_idx] = scaled
@@ -2628,6 +2845,108 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     if text in {"0", "false", "f", "no", "n", "off"}:
         return False
     return default
+
+
+def _build_weekend_or_holiday_day_flags(
+    context: ModelContext, bundle: Mapping[str, object]
+) -> dict[int, bool]:
+    calendars = context.calendars
+    if calendars is None or calendars.empty or "data" not in calendars.columns:
+        return {}
+
+    did_of: Mapping[object, int] = bundle.get("did_of", {})  # type: ignore[assignment]
+    if not did_of:
+        return {}
+
+    work = calendars.copy()
+    data_dt = pd.to_datetime(work["data"], errors="coerce")
+    work = work.assign(_data_dt=data_dt).dropna(subset=["_data_dt"])
+    work["_data_dt"] = work["_data_dt"].dt.tz_localize(None)
+    work["_data_dt"] = work["_data_dt"].dt.normalize()
+    work["_date"] = work["_data_dt"].dt.date
+    work = work.dropna(subset=["_date"]).drop_duplicates(subset=["_date"], keep="last")
+
+    if work.empty:
+        return {}
+
+    if "is_weekend_or_holiday" in work.columns:
+        raw_flags = work["is_weekend_or_holiday"].apply(lambda v: _parse_bool(v, False))
+    else:
+        if "is_weekend" in work.columns:
+            weekend_series = work["is_weekend"].apply(lambda v: _parse_bool(v, False))
+        else:
+            weekend_series = work["_data_dt"].dt.weekday >= 5
+
+        if "is_weekday_holiday" in work.columns:
+            holiday_series = work["is_weekday_holiday"].apply(lambda v: _parse_bool(v, False))
+        elif "holiday_desc" in work.columns:
+            holiday_series = work["holiday_desc"].astype(str).str.strip().ne("")
+        else:
+            holiday_series = pd.Series(False, index=work.index)
+
+        raw_flags = weekend_series.astype(bool) | holiday_series.astype(bool)
+
+    result: dict[int, bool] = {}
+    for day, flag in zip(work["_date"], raw_flags, strict=False):
+        day_idx = did_of.get(day)
+        if day_idx is not None:
+            result[day_idx] = bool(flag)
+
+    return result
+
+
+def _count_history_weekend_totals(
+    history: pd.DataFrame, eid_of: Mapping[str, int]
+) -> dict[int, int]:
+    if history is None or history.empty:
+        return {}
+
+    id_col = None
+    for candidate in ("employee_id", "dipendente_id", "resource_id", "matricola"):
+        if candidate in history.columns:
+            id_col = candidate
+            break
+    if id_col is None:
+        return {}
+
+    work = history.copy()
+    work[id_col] = work[id_col].astype(str).str.strip()
+
+    if "is_weekend_or_holiday" in work.columns:
+        flags = work["is_weekend_or_holiday"].apply(lambda v: _parse_bool(v, False))
+    else:
+        if "is_weekend" in work.columns:
+            weekend_series = work["is_weekend"].apply(lambda v: _parse_bool(v, False))
+        else:
+            date_col = next((c for c in ("data", "date") if c in work.columns), None)
+            if date_col is not None:
+                parsed_dates = pd.to_datetime(work[date_col], errors="coerce")
+                weekend_series = parsed_dates.dt.dayofweek.isin([5, 6])
+            else:
+                weekend_series = pd.Series(False, index=work.index)
+
+        if "is_weekday_holiday" in work.columns:
+            holiday_series = work["is_weekday_holiday"].apply(lambda v: _parse_bool(v, False))
+        elif "holiday_desc" in work.columns:
+            holiday_series = work["holiday_desc"].astype(str).str.strip().ne("")
+        else:
+            holiday_series = pd.Series(False, index=work.index)
+
+        flags = weekend_series.fillna(False).astype(bool) | holiday_series.astype(bool)
+
+    if not flags.any():
+        return {}
+
+    filtered = work.loc[flags.astype(bool)]
+    counts = filtered.groupby(id_col).size()
+
+    result: dict[int, int] = {}
+    for emp_id, count in counts.items():
+        emp_idx = eid_of.get(str(emp_id).strip())
+        if emp_idx is not None:
+            result[emp_idx] = int(count)
+
+    return result
 
 
 def _sanitize_identifier(value: str) -> str:
