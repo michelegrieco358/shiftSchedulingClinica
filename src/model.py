@@ -270,6 +270,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                         model.Add(state_var == 0)
 
     _apply_lock_constraints(context, model, assign_vars, bundle)
+    _add_cross_assignment_limits(context, model, assign_vars, bundle)
 
     hour_info = _add_hour_constraints(context, model, assign_vars, bundle)
     night_info = _add_night_constraints(context, model, assign_vars, bundle)
@@ -2579,6 +2580,54 @@ def _build_weekly_rest_objective_terms(
     return [var * coeff for var in violations.values()]
 
 
+def _add_cross_assignment_limits(
+    context: ModelContext,
+    model: cp_model.CpModel,
+    assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
+    bundle: Mapping[str, object],
+) -> None:
+    """Impose hard limits on cross-department assignments per employee."""
+
+    if not assign_vars:
+        return
+
+    cross_limits = _build_employee_cross_limit_map(context.employees, bundle)
+    if not cross_limits:
+        return
+
+    slot_reparto_map = _build_slot_reparto_index(context, bundle)
+    if not slot_reparto_map:
+        return
+
+    employee_reparto_map = _build_employee_reparto_index(context.employees, bundle)
+    if not employee_reparto_map:
+        return
+
+    cross_assignments_by_emp: dict[int, list[cp_model.IntVar]] = {}
+
+    for (emp_idx, slot_idx), var in assign_vars.items():
+        limit = cross_limits.get(emp_idx)
+        if limit is None:
+            continue
+
+        emp_reparto = employee_reparto_map.get(emp_idx)
+        slot_reparto = slot_reparto_map.get(slot_idx)
+
+        if not emp_reparto or not slot_reparto:
+            continue
+
+        if emp_reparto != slot_reparto:
+            cross_assignments_by_emp.setdefault(emp_idx, []).append(var)
+
+    for emp_idx, vars_list in cross_assignments_by_emp.items():
+        if not vars_list:
+            continue
+        limit = cross_limits.get(emp_idx)
+        if limit is None:
+            continue
+        model.Add(sum(vars_list) <= int(limit))
+
+
 def _build_cross_assignment_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
@@ -2735,6 +2784,51 @@ def _build_employee_reparto_index(
 
         if reparto_value:
             result[emp_idx] = reparto_value
+
+    return result
+
+
+def _build_employee_cross_limit_map(
+    employees: pd.DataFrame, bundle: Mapping[str, object]
+) -> dict[int, int]:
+    if employees.empty or "employee_id" not in employees.columns:
+        return {}
+
+    column = "cross_max_shifts_month"
+    if column not in employees.columns:
+        return {}
+
+    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
+    if not eid_of:
+        return {}
+
+    result: dict[int, int] = {}
+
+    for row in employees.itertuples(index=False):
+        emp_id = str(getattr(row, "employee_id", "")).strip()
+        if not emp_id:
+            continue
+
+        emp_idx = eid_of.get(emp_id)
+        if emp_idx is None:
+            continue
+
+        raw_value = getattr(row, column, None)
+        if raw_value is None:
+            continue
+
+        if isinstance(raw_value, float) and math.isnan(raw_value):
+            continue
+
+        try:
+            limit = int(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+
+        if limit < 0:
+            continue
+
+        result[emp_idx] = limit
 
     return result
 
