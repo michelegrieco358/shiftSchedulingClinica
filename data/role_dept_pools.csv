@@ -1,7 +1,3 @@
 ruolo,pool_id,reparto_id
-infermiere,A,ortopedia
-infermiere,A,cardiologia
 infermiere,A,degenza
-infermiere,B,pneumologia
-oss,A,degenza
-oss,A,malattie infettive
+caposala,C,degenza
