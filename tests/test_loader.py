@@ -321,6 +321,21 @@ def test_load_employees_and_cross_policy_defaults() -> None:
     assert "cross_penalty_weight" not in enriched.columns
 
 
+def test_load_all_enriches_employees_with_fte() -> None:
+    loaded = load_all(str(DATA_DIR / "config.yaml"), str(DATA_CSV_DIR))
+    employees_df = loaded.employees_df
+
+    assert "fte" in employees_df.columns
+    assert "fte_weight" in employees_df.columns
+
+    lookup = employees_df.set_index("employee_id")
+    # Baseline infermiere 168h, caposala 150h (see config.yaml).
+    assert lookup.loc["E001", "fte"] == pytest.approx(1.0)
+    assert lookup.loc["E047", "fte"] == pytest.approx(1.0)
+    # Columns should contain finite, non-negative weights.
+    assert (lookup["fte_weight"] >= 0).all()
+
+
 def test_load_employees_applies_default_hour_caps(tmp_path: Path) -> None:
     employees_df = _load_basic_employees(tmp_path)
 

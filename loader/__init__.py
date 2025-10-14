@@ -36,6 +36,7 @@ from .coverage import (
 )
 from .employees import (
     build_department_compatibility,
+    enrich_employees_with_fte,
     load_employees,
     load_role_dept_pools,
 )
@@ -120,6 +121,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         weeks_in_horizon,
         horizon_days,
     )
+    employees_df = enrich_employees_with_fte(employees_df, cfg)
     employees_df = enrich_employees_with_cross_policy(employees_df, cfg)
     shifts_df = load_shifts(os.path.join(data_dir, "shifts.csv"))
     dept_shift_map_df = load_department_shift_map(
