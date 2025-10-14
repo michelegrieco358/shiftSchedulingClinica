@@ -15,7 +15,6 @@ NIGHT_TO_DAY_OBJECTIVE_SCALE = 1000
 REST11_OBJECTIVE_SCALE = 1000
 WEEKLY_REST_OBJECTIVE_SCALE = 1000
 CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
-NIGHT_FAIRNESS_OBJECTIVE_SCALE = 1
 NIGHT_FAIRNESS_WEIGHT_SCALE = 100
 WEEKEND_FAIRNESS_OBJECTIVE_SCALE = 1000
 WEEKEND_FAIRNESS_WEIGHT_SCALE = 100
@@ -812,6 +811,34 @@ def _pick_float_from_mapping(
     return None
 
 
+def _resolve_night_fairness_weight(cfg: Mapping[str, Any] | None) -> float:
+    if not isinstance(cfg, Mapping):
+        return 0.0
+
+    def _extract(mapping: Mapping[str, Any] | None) -> float | None:
+        return _pick_float_from_mapping(
+            mapping,
+            (
+                "night_penalty_weight",
+                "night_fairness_weight",
+                "night_weight",
+                "alpha_nights",
+            ),
+        )
+
+    fairness_cfg = cfg.get("fairness") if isinstance(cfg.get("fairness"), Mapping) else None
+    value = _extract(fairness_cfg)
+    if value is None:
+        defaults = cfg.get("defaults")
+        if isinstance(defaults, Mapping):
+            value = _extract(defaults.get("fairness") if isinstance(defaults.get("fairness"), Mapping) else None)
+    if value is None:
+        value = _extract(cfg)
+    if value is None:
+        return 0.0
+    return max(float(value), 0.0)
+
+
 def _resolve_weekend_fairness_weight(cfg: Mapping[str, Any] | None) -> float:
     if not isinstance(cfg, Mapping):
         return 0.0
@@ -826,6 +853,13 @@ def _resolve_weekend_fairness_weight(cfg: Mapping[str, Any] | None) -> float:
     ]
 
     value = _pick_float_from_mapping(fairness_cfg, candidates)
+    if value is None:
+        defaults = cfg.get("defaults")
+        if isinstance(defaults, Mapping):
+            value = _pick_float_from_mapping(
+                defaults.get("fairness") if isinstance(defaults.get("fairness"), Mapping) else None,
+                candidates,
+            )
     if value is None:
         value = _pick_float_from_mapping(
             cfg,
@@ -2315,6 +2349,11 @@ def _build_night_fairness_objective_terms(
     if not night_codes:
         return []
 
+    weight_scale = _resolve_night_fairness_weight(cfg)
+    weight_coeff = int(round(weight_scale * NIGHT_FAIRNESS_WEIGHT_SCALE))
+    if weight_coeff <= 0:
+        return []
+
     history_counts = _count_history_night_totals(context.history, night_codes, eid_of)
     emp_to_dept = _build_employee_reparto_index(employees, bundle)
     if not emp_to_dept:
@@ -2396,9 +2435,7 @@ def _build_night_fairness_objective_terms(
         model.Add(total_var == sum(total_expr_terms))
 
         penalty_expr = sum(penalty_terms)
-        if NIGHT_FAIRNESS_OBJECTIVE_SCALE != 1:
-            penalty_expr = NIGHT_FAIRNESS_OBJECTIVE_SCALE * penalty_expr
-        objective_terms.append(penalty_expr)
+        objective_terms.append(penalty_expr * weight_coeff)
 
     return objective_terms
 

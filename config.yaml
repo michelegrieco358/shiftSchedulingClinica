@@ -11,6 +11,10 @@ rest_rules:
 preassignments:
   change_penalty_weight: 5.0
 
+fairness:
+  night_weight: 1.0
+  weekend_weight: 1.0
+
 defaults:
   allowed_roles: ["infermiere", "oss", "caposala"]
   departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
@@ -42,6 +46,11 @@ defaults:
     max_per_week: 2
     max_per_month: 8
     extra_consecutive_penalty_weight: 1.0
+    single_night_recovery_penalty_weight: 1.0
+    night_to_day_penalty_weight: 1.0
+  fairness:
+    night_weight: 1.0
+    weekend_weight: 1.0
 roles:
   infermiere:
     can_work_night: true

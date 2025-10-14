@@ -188,6 +188,35 @@ def load_config(path: str) -> dict[str, Any]:
         "group_cap_default": cap_default,
     }
 
+    def _normalize_fairness_section(section: Any, label: str) -> dict[str, float]:
+        if section is None:
+            section = {}
+        if not isinstance(section, dict):
+            raise LoaderError(f"{label} deve essere un dizionario")
+        normalized = dict(section)
+        for key in ("night_weight", "weekend_weight"):
+            raw = normalized.get(key, 0.0)
+            if raw in (None, ""):
+                value = 0.0
+            else:
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError) as exc:
+                    raise LoaderError(
+                        f"{label}.{key} deve essere un numero >= 0 (trovato: {raw!r})"
+                    ) from exc
+            if value < 0:
+                raise LoaderError(
+                    f"{label}.{key} deve essere un numero >= 0 (trovato: {raw!r})"
+                )
+            normalized[key] = float(value)
+        return normalized
+
+    cfg["fairness"] = _normalize_fairness_section(cfg.get("fairness"), "config: fairness")
+    defaults["fairness"] = _normalize_fairness_section(
+        defaults.get("fairness"), "config: defaults.fairness"
+    )
+
     return cfg
 
 
