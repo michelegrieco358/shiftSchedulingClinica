@@ -342,7 +342,7 @@ def load_employees(
     for idx, base_hours in enumerate(contract_hours):
         # Ripartiamo le ore contrattuali su una settimana "media" del mese
         # (ore_mese / giorni_orizzonte * 7). Il valore viene poi moltiplicato
-        # per 1.5 così da consentire straordinari senza concentrare tutto in
+        # per 1.4 (+40%) così da consentire straordinari senza concentrare tutto in
         # un'unica settimana, applicando lo stesso cap anche alle settimane
         # parziali all'inizio o alla fine dell'orizzonte.
         weekly_theoretical = (
@@ -354,7 +354,7 @@ def load_employees(
         if override:
             week_hours = parse_hours_nonneg(override, "max_week_hours_h")
         else:
-            week_hours = weekly_theoretical * 1.5
+            week_hours = weekly_theoretical * 1.4
         if week_hours + 1e-9 < weekly_theoretical:
             raise LoaderError(
                 "employees.csv: max_week_hours_h deve essere ≥ ore settimanali teoriche per employee_id "
