@@ -131,6 +131,7 @@ def _basic_shifts_catalog() -> pd.DataFrame:
                 "shift_id": "M",
                 "start": "06:00",
                 "end": "14:00",
+                "break_min": 0,
                 "duration_min": 480,
                 "crosses_midnight": 0,
                 "start_time": pd.to_timedelta(6, unit="h"),
@@ -140,6 +141,7 @@ def _basic_shifts_catalog() -> pd.DataFrame:
                 "shift_id": "P",
                 "start": "14:00",
                 "end": "22:00",
+                "break_min": 0,
                 "duration_min": 480,
                 "crosses_midnight": 0,
                 "start_time": pd.to_timedelta(14, unit="h"),
@@ -149,6 +151,7 @@ def _basic_shifts_catalog() -> pd.DataFrame:
                 "shift_id": "N",
                 "start": "22:00",
                 "end": "06:00",
+                "break_min": 0,
                 "duration_min": 480,
                 "crosses_midnight": 1,
                 "start_time": pd.to_timedelta(22, unit="h"),
@@ -158,6 +161,7 @@ def _basic_shifts_catalog() -> pd.DataFrame:
                 "shift_id": "X",
                 "start": "10:00",
                 "end": "18:00",
+                "break_min": 0,
                 "duration_min": 480,
                 "crosses_midnight": 0,
                 "start_time": pd.to_timedelta(10, unit="h"),
@@ -255,6 +259,44 @@ def test_build_shift_slots_requires_explicit_department_enable_for_custom_shift(
     assert not slots_df.empty
     assert slots_df.loc[0, "shift_code"] == "X"
     assert slots_df.loc[0, "reparto_id"] == "DEP"
+
+
+def test_build_shift_slots_applies_break_minutes_to_duration() -> None:
+    shifts_df = pd.DataFrame(
+        [
+            {
+                "shift_id": "M",
+                "start": "08:00",
+                "end": "16:00",
+                "break_min": 45,
+                "duration_min": 435,
+                "crosses_midnight": 0,
+                "start_time": pd.to_timedelta(8, unit="h"),
+                "end_time": pd.to_timedelta(16, unit="h"),
+            }
+        ]
+    )
+    month_plan_df = pd.DataFrame(
+        [
+            {
+                "data": "2025-01-01",
+                "data_dt": pd.Timestamp("2025-01-01"),
+                "reparto_id": "DEP",
+                "shift_code": "M",
+                "coverage_code": "COV",
+            }
+        ]
+    )
+    defaults = {"departments": ["DEP"]}
+
+    slots_df = build_shift_slots(
+        month_plan_df,
+        shifts_df,
+        _empty_dept_map_df(),
+        defaults,
+    )
+
+    assert slots_df.loc[0, "duration_min"] == 435
 
 
 def test_load_employees_and_cross_policy_defaults() -> None:
@@ -678,6 +720,7 @@ def test_load_availability_preserves_cross_midnight_rows_spanning_horizon(tmp_pa
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["N"],
+            "break_min": [0],
             "duration_min": [600],
             "crosses_midnight": [1],
             "start_time": [pd.to_timedelta(22, unit="h")],
@@ -714,6 +757,7 @@ def test_load_leaves_preserves_cross_midnight_rows_spanning_horizon(tmp_path: Pa
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["N"],
+            "break_min": [0],
             "duration_min": [600],
             "crosses_midnight": [1],
             "start_time": [pd.to_timedelta(22, unit="h")],
@@ -747,6 +791,7 @@ def test_load_leaves_uses_custom_absence_hours(tmp_path: Path) -> None:
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["M"],
+            "break_min": [0],
             "duration_min": [480],
             "crosses_midnight": [0],
             "start_time": [pd.to_timedelta(8, unit="h")],
@@ -777,6 +822,7 @@ def test_load_leaves_keeps_month_history_prior_to_horizon(tmp_path: Path) -> Non
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["M"],
+            "break_min": [0],
             "duration_min": [480],
             "crosses_midnight": [0],
             "start_time": [pd.to_timedelta(8, unit="h")],
@@ -809,6 +855,7 @@ def test_load_leaves_uses_fallback_absence_hours(tmp_path: Path) -> None:
     shifts_df = pd.DataFrame(
         {
             "shift_id": ["M"],
+            "break_min": [0],
             "duration_min": [480],
             "crosses_midnight": [0],
             "start_time": [pd.to_timedelta(8, unit="h")],

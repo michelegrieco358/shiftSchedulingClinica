@@ -22,14 +22,23 @@ def load_shifts(path: str) -> pd.DataFrame:
 
     df = pd.read_csv(path, dtype=str).fillna("")
     _ensure_cols(
-        df, {"shift_id", "start", "end", "duration_min", "crosses_midnight"}, "shifts.csv"
+        df,
+        {"shift_id", "start", "end", "break_min", "duration_min", "crosses_midnight"},
+        "shifts.csv",
     )
 
     for c in ["shift_id", "start", "end"]:
         df[c] = df[c].astype(str).str.strip()
 
     df["duration_min"] = pd.to_numeric(df["duration_min"], errors="raise").astype(int)
+    df["break_min"] = pd.to_numeric(df["break_min"], errors="raise").astype(int)
     df["crosses_midnight"] = pd.to_numeric(df["crosses_midnight"], errors="raise").astype(int)
+
+    if (df["break_min"] < 0).any():
+        bad = df.loc[df["break_min"] < 0, "shift_id"].unique().tolist()
+        raise LoaderError(
+            f"shifts.csv: break_min non può essere negativo per i turni: {bad}"
+        )
 
     bad_cm = sorted(set(df["crosses_midnight"].unique()) - {0, 1})
     if bad_cm:
@@ -37,7 +46,13 @@ def load_shifts(path: str) -> pd.DataFrame:
             f"shifts.csv: crosses_midnight deve essere 0 o 1, trovati: {bad_cm}"
         )
 
-    key_cols = ["shift_id", "start", "end", "duration_min", "crosses_midnight"]
+    key_cols = [
+        "shift_id",
+        "start",
+        "end",
+        "break_min",
+        "crosses_midnight",
+    ]
     if df["shift_id"].duplicated().any():
         grp = df.groupby("shift_id")[key_cols].nunique()
         diverging = grp[(grp > 1).any(axis=1)]
@@ -52,6 +67,7 @@ def load_shifts(path: str) -> pd.DataFrame:
     mask_zero = df["shift_id"].isin(zero_duration_shifts)
     if (
         not df.loc[mask_zero, "duration_min"].eq(0).all()
+        or not df.loc[mask_zero, "break_min"].eq(0).all()
         or not df.loc[mask_zero, "crosses_midnight"].eq(0).all()
     ):
         raise LoaderError(
@@ -87,9 +103,16 @@ def load_shifts(path: str) -> pd.DataFrame:
         h, m = s.split(":")
         return int(h) * 60 + int(m)
 
-    for sid, s, e, cm in df.loc[
-        mask_nzero, ["shift_id", "start", "end", "crosses_midnight"]
-    ].itertuples(index=False):
+    computed_duration: dict[int, int] = {}
+    for row in df.loc[
+        mask_nzero, ["shift_id", "start", "end", "crosses_midnight", "break_min"]
+    ].itertuples():
+        idx = row.Index
+        sid = row.shift_id
+        s = row.start
+        e = row.end
+        cm = int(row.crosses_midnight)
+        pause = int(row.break_min)
         sm = to_minutes(s)
         em = to_minutes(e)
         if cm == 0 and not (em > sm):
@@ -100,6 +123,13 @@ def load_shifts(path: str) -> pd.DataFrame:
             raise LoaderError(
                 f"shifts.csv: per turno {sid} crosses_midnight=1 ma end >= start ({e} >= {s})"
             )
+        raw_duration = em - sm if cm == 0 else (24 * 60 - sm + em)
+        if pause >= raw_duration:
+            raise LoaderError(
+                "shifts.csv: break_min %s per turno %s non può essere >= durata effettiva %s"
+                % (pause, sid, raw_duration)
+            )
+        computed_duration[idx] = raw_duration - pause
 
     def to_timedelta_or_nat(s: str) -> pd.Timedelta | pd.NaTType:
         """Converte stringa HH:MM in timedelta o NaT se vuota."""
@@ -111,10 +141,14 @@ def load_shifts(path: str) -> pd.DataFrame:
     df["start_time"] = df["start"].apply(to_timedelta_or_nat)
     df["end_time"] = df["end"].apply(to_timedelta_or_nat)
 
+    for idx, duration in computed_duration.items():
+        df.at[idx, "duration_min"] = duration
+
     return df[[
         "shift_id",
         "start",
         "end",
+        "break_min",
         "duration_min",
         "crosses_midnight",
         "start_time",
@@ -240,7 +274,7 @@ def load_department_shift_map(
     ]
 
 
-def _compute_duration_minutes(start: pd.Timedelta, end: pd.Timedelta) -> int:
+def _compute_raw_duration_minutes(start: pd.Timedelta, end: pd.Timedelta) -> int:
     """Calcola la durata in minuti tra start ed end, gestendo il cross-midnight."""
     base_day = pd.to_timedelta(1, unit="D")
     delta = end - start
@@ -253,6 +287,22 @@ def _compute_duration_minutes(start: pd.Timedelta, end: pd.Timedelta) -> int:
             % (start, end)
         )
     return minutes
+
+
+def _compute_duration_minutes(
+    start: pd.Timedelta, end: pd.Timedelta, break_min: int
+) -> int:
+    """Restituisce la durata effettiva sottraendo la pausa."""
+    minutes = _compute_raw_duration_minutes(start, end)
+    if break_min < 0:
+        raise LoaderError(
+            "Durata turno non valida: break_min negativo (%s minuti)" % break_min
+        )
+    if break_min >= minutes:
+        raise LoaderError(
+            "Durata turno non valida: break_min %s >= durata %s" % (break_min, minutes)
+        )
+    return minutes - break_min
 
 
 def _is_night_shift(
@@ -389,7 +439,8 @@ def build_shift_slots(
             )
 
         crosses_midnight = bool(end_time < start_time)
-        duration_min = _compute_duration_minutes(start_time, end_time)
+        break_min = int(base.get("break_min", 0))
+        duration_min = _compute_duration_minutes(start_time, end_time, break_min)
 
         day_start = _local_day_start(calendar_date, tz)
         start_dt = day_start + start_time
