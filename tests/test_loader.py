@@ -321,6 +321,21 @@ def test_load_employees_and_cross_policy_defaults() -> None:
     assert "cross_penalty_weight" not in enriched.columns
 
 
+def test_load_employees_applies_default_hour_caps(tmp_path: Path) -> None:
+    employees_df = _load_basic_employees(tmp_path)
+
+    assert len(employees_df) == 1
+    row = employees_df.iloc[0]
+
+    base_hours = 160
+    expected_month_cap_min = int(round(base_hours * 1.25 * 60))
+    assert row["max_month_min"] == expected_month_cap_min
+
+    weekly_theoretical = base_hours / 31 * 7
+    expected_week_cap_min = int(round(weekly_theoretical * 1.4 * 60))
+    assert row["max_week_min"] == expected_week_cap_min
+
+
 def test_enrich_employees_with_cross_policy_rejects_penalty_override(tmp_path: Path) -> None:
     cfg_path = _write_basic_config(
         tmp_path,
@@ -942,6 +957,74 @@ def test_apply_unplanned_leave_durations_overrides_hours(tmp_path: Path) -> None
     assert not bool(p_row["is_planned"])
     m_row = same_day.loc[same_day["turno"].eq("M")].iloc[0]
     assert m_row["shift_duration_min"] == pytest.approx(0.0)
+
+
+def test_load_all_applies_unplanned_absence_hours(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        (DATA_DIR / "config.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for src in DATA_CSV_DIR.glob("*.csv"):
+        shutil.copy(src, data_dir / src.name)
+
+    leaves_path = data_dir / "leaves.csv"
+    leaves_df = pd.read_csv(leaves_path)
+    mask = (leaves_df["employee_id"] == "E006") & (
+        leaves_df["date_from"] == "2025-11-10"
+    )
+    assert mask.any(), "leaves.csv sample should contain E006 on 2025-11-10"
+    leaves_df.loc[mask, "is_planned"] = False
+    leaves_df.to_csv(leaves_path, index=False)
+
+    pd.DataFrame(
+        {
+            "employee_id": ["E006"],
+            "date": ["2025-11-10"],
+            "state_code": ["N"],
+        }
+    ).to_csv(data_dir / "preassignments.csv", index=False)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"locks.csv: caricati .*",
+            category=UserWarning,
+        )
+        loaded = load_all(str(cfg_path), str(data_dir))
+
+    day_rows = loaded.leaves_days_df
+    assert not day_rows.empty
+
+    target_day = day_rows[
+        (day_rows["employee_id"] == "E006")
+        & (day_rows["data"] == "2025-11-10")
+    ].iloc[0]
+    assert target_day["absence_hours_h"] == pytest.approx(10.5)
+    assert not bool(target_day["is_planned"])
+
+    fallback_day = day_rows[
+        (day_rows["employee_id"] == "E006")
+        & (day_rows["data"] == "2025-11-11")
+    ].iloc[0]
+    assert fallback_day["absence_hours_h"] == pytest.approx(7.5)
+
+    shift_rows = loaded.leaves_df[
+        (loaded.leaves_df["employee_id"] == "E006")
+        & (loaded.leaves_df["data"] == "2025-11-10")
+    ]
+    assert not shift_rows.empty
+
+    night_row = shift_rows.loc[shift_rows["turno"].eq("N")].iloc[0]
+    assert night_row["shift_duration_min"] == pytest.approx(630.0)
+    assert not bool(night_row["is_planned"])
+
+    others = shift_rows.loc[~shift_rows["turno"].eq("N")]
+    assert not others.empty
+    assert (others["shift_duration_min"] == 0.0).all()
 def test_enrich_employees_with_fte_uses_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)
