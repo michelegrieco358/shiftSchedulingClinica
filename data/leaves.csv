@@ -1,5 +1,5 @@
-employee_id,date_from,date_to,type
-E006,2025-11-10,2025-11-12,ferie
-E021,2025-11-15,2025-11-16,permesso
-E035,2025-11-18,2025-11-18,congedo
-E043,2025-11-22,2025-11-24,ferie
+employee_id,date_from,date_to,type,is_planned
+E006,2025-11-10,2025-11-12,ferie,true
+E021,2025-11-15,2025-11-16,permesso,true
+E035,2025-11-18,2025-11-18,congedo,true
+E043,2025-11-22,2025-11-24,ferie,true

@@ -30,7 +30,7 @@ from loader.employees import (
     load_employees,
     resolve_fulltime_baseline,
 )
-from loader.leaves import load_leaves
+from loader.leaves import apply_unplanned_leave_durations, load_leaves
 from loader.preassignments import load_preassignments
 from loader.shifts import (
     build_shift_slots,
@@ -879,6 +879,69 @@ def test_load_leaves_uses_fallback_absence_hours(tmp_path: Path) -> None:
 
     assert not day_out.empty
     assert day_out.loc[0, "absence_hours_h"] == pytest.approx(7.25)
+
+
+def test_apply_unplanned_leave_durations_overrides_hours(tmp_path: Path) -> None:
+    calendar_df = build_calendar(date(2024, 4, 1), date(2024, 4, 3))
+    employees_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "absence_full_day_hours_effective_h": [7.5],
+        }
+    )
+    shifts_df = pd.DataFrame(
+        {
+            "shift_id": ["M", "P"],
+            "break_min": [0, 0],
+            "duration_min": [480, 420],
+            "crosses_midnight": [0, 0],
+            "start_time": [pd.to_timedelta(8, unit="h"), pd.to_timedelta(14, unit="h")],
+            "end_time": [pd.to_timedelta(16, unit="h"), pd.to_timedelta(22, unit="h")],
+        }
+    )
+
+    leaves_path = tmp_path / "leaves.csv"
+    leaves_path.write_text(
+        "employee_id,date_from,date_to,type,is_planned\n"
+        "E1,2024-04-01,2024-04-01,FERIE,false\n",
+        encoding="utf-8",
+    )
+
+    shift_out, day_out = load_leaves(
+        str(leaves_path),
+        employees_df,
+        shifts_df,
+        calendar_df,
+    )
+
+    assert pytest.approx(day_out.loc[0, "absence_hours_h"], rel=1e-6) == 7.5
+
+    preassignments_df = pd.DataFrame(
+        {
+            "employee_id": ["E1"],
+            "date": [date(2024, 4, 1)],
+            "state_code": ["P"],
+        }
+    )
+
+    adjusted_shift, adjusted_day = apply_unplanned_leave_durations(
+        shift_out,
+        day_out,
+        preassignments_df,
+        shifts_df,
+    )
+
+    target_row = adjusted_day.loc[adjusted_day["data"].eq("2024-04-01")].iloc[0]
+    assert target_row["absence_hours_h"] == pytest.approx(7.0)
+    assert not bool(target_row["is_planned"])
+
+    same_day = adjusted_shift[adjusted_shift["data"].eq("2024-04-01")]
+    assert not same_day.empty
+    p_row = same_day.loc[same_day["turno"].eq("P")].iloc[0]
+    assert p_row["shift_duration_min"] == pytest.approx(420)
+    assert not bool(p_row["is_planned"])
+    m_row = same_day.loc[same_day["turno"].eq("M")].iloc[0]
+    assert m_row["shift_duration_min"] == pytest.approx(0.0)
 def test_enrich_employees_with_fte_uses_defaults() -> None:
     cfg = load_config(str(DATA_DIR / "config.yaml"))
     horizon_days, weeks_in_horizon = _calendar_info(cfg)

@@ -35,6 +35,7 @@ def load_leaves(
         "data_dt",
         "turno",
         "tipo",
+        "is_planned",
         "shift_start_time",
         "shift_end_time",
         "shift_start_dt",
@@ -60,6 +61,7 @@ def load_leaves(
         "is_leave_day",
         "is_absent",
         "absence_hours_h",
+        "is_planned",
         "dow_iso",
         "week_start_date",
         "week_start_date_dt",
@@ -146,8 +148,12 @@ def load_leaves(
         if hours_for_absences.size and not pd.isna(hours_for_absences.min())
         else (absence_hours_h if absence_hours_h is not None else 6.0)
     )
+    day_explode_columns = ["employee_id", "date_from", "date_to", "type"]
+    if "is_planned" in absences_df.columns:
+        day_explode_columns.append("is_planned")
+
     abs_by_day = explode_absences_by_day(
-        absences_df.loc[:, ["employee_id", "date_from", "date_to", "type"]],
+        absences_df.loc[:, day_explode_columns],
         min_date=min(month_start_date, horizon_start_date),
         max_date=horizon_end_date,
         absence_hours_h=explode_fallback,
@@ -156,6 +162,8 @@ def load_leaves(
     if not abs_by_day.empty:
         abs_by_day["employee_id"] = abs_by_day["employee_id"].astype(str).str.strip()
         abs_by_day["absence_hours_h"] = abs_by_day["employee_id"].map(hours_series)
+        if "is_planned" not in abs_by_day.columns:
+            abs_by_day["is_planned"] = True
 
     shift_info = shifts_df.loc[
         shifts_df["shift_id"].isin(allowed_turns),
@@ -191,6 +199,7 @@ def load_leaves(
                             "data": day_str,
                             "turno": shift.shift_id,
                             "tipo": row.tipo,
+                            "is_planned": getattr(row, "is_planned", True),
                         }
                     )
             day += pd.Timedelta(days=1)
@@ -254,6 +263,7 @@ def load_leaves(
                 "data_dt",
                 "turno",
                 "tipo",
+                "is_planned",
                 "shift_start_time",
                 "shift_end_time",
                 "shift_start_dt",
@@ -304,6 +314,7 @@ def load_leaves(
                 tipo_set=("tipo", _join_types),
                 is_absent=("is_absent", "max"),
                 absence_hours_h=("absence_hours_h", "max"),
+                is_planned=("is_planned", "max"),
                 dow_iso=("dow_iso", "first"),
                 week_start_date=("week_start_date", "first"),
                 week_start_date_dt=("week_start_date_dt", "first"),
@@ -318,6 +329,7 @@ def load_leaves(
         day_out["is_leave_day"] = 1
         day_out["is_absent"] = day_out["is_absent"].fillna(False).astype(bool)
         day_out["absence_hours_h"] = day_out["absence_hours_h"].fillna(0.0)
+        day_out["is_planned"] = day_out["is_planned"].fillna(True).astype(bool)
         day_out = day_out[
             [
                 "employee_id",
@@ -327,6 +339,7 @@ def load_leaves(
                 "is_leave_day",
                 "is_absent",
                 "absence_hours_h",
+                "is_planned",
                 "dow_iso",
                 "week_start_date",
                 "week_start_date_dt",
@@ -342,3 +355,146 @@ def load_leaves(
         day_out = pd.DataFrame(columns=day_columns)
 
     return shift_out, day_out
+
+
+def apply_unplanned_leave_durations(
+    leaves_df: pd.DataFrame,
+    leaves_days_df: pd.DataFrame,
+    preassignments_df: pd.DataFrame | None,
+    shifts_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Override absence hours for unplanned leaves using preassigned shifts."""
+
+    if leaves_days_df is None or leaves_days_df.empty:
+        return leaves_df, leaves_days_df
+    if "is_planned" not in leaves_days_df.columns:
+        return leaves_df, leaves_days_df
+    planned_series = leaves_days_df["is_planned"].astype("boolean", copy=False)
+    if planned_series.fillna(True).all():
+        return leaves_df, leaves_days_df
+    if preassignments_df is None or preassignments_df.empty:
+        return leaves_df, leaves_days_df
+    if "employee_id" not in preassignments_df.columns or "state_code" not in preassignments_df.columns:
+        return leaves_df, leaves_days_df
+
+    day_work = leaves_days_df.copy()
+    day_work["employee_id"] = day_work["employee_id"].astype(str).str.strip()
+    if "data_dt" in day_work.columns:
+        day_work["_date"] = pd.to_datetime(day_work["data_dt"], errors="coerce").dt.date
+    else:
+        day_work["_date"] = pd.to_datetime(day_work["data"], errors="coerce").dt.date
+    day_work["absence_hours_h"] = pd.to_numeric(
+        day_work.get("absence_hours_h"), errors="coerce"
+    ).fillna(0.0)
+
+    unplanned_mask = ~planned_series.fillna(True)
+    if "is_in_horizon" in day_work.columns:
+        unplanned_mask &= day_work["is_in_horizon"].astype("boolean", copy=False).fillna(False)
+    if "is_absent" in day_work.columns:
+        unplanned_mask &= day_work["is_absent"].astype("boolean", copy=False).fillna(True)
+    unplanned_mask &= day_work["_date"].notna()
+
+    if not unplanned_mask.any():
+        day_work = day_work.drop(columns="_date")
+        return leaves_df, day_work
+
+    shift_minutes_map: dict[str, float] = {}
+    if shifts_df is not None and not shifts_df.empty and {"shift_id", "duration_min"}.issubset(shifts_df.columns):
+        mapping_frame = shifts_df.loc[:, ["shift_id", "duration_min"]].copy()
+        mapping_frame["shift_id"] = mapping_frame["shift_id"].astype(str).str.strip().str.upper()
+        mapping_frame["duration_min"] = pd.to_numeric(
+            mapping_frame["duration_min"], errors="coerce"
+        )
+        mapping_frame = mapping_frame.dropna(subset=["shift_id", "duration_min"])
+        shift_minutes_map = mapping_frame.set_index("shift_id")["duration_min"].to_dict()
+    elif leaves_df is not None and not leaves_df.empty:
+        if {"turno", "shift_duration_min"}.issubset(leaves_df.columns):
+            mapping_frame = leaves_df.loc[:, ["turno", "shift_duration_min"]].copy()
+            mapping_frame["turno"] = mapping_frame["turno"].astype(str).str.strip().str.upper()
+            mapping_frame["shift_duration_min"] = pd.to_numeric(
+                mapping_frame["shift_duration_min"], errors="coerce"
+            )
+            mapping_frame = mapping_frame.dropna(subset=["turno", "shift_duration_min"])
+            shift_minutes_map = mapping_frame.set_index("turno")["shift_duration_min"].to_dict()
+
+    pre_columns = ["employee_id", "state_code"]
+    date_column = None
+    for candidate in ("date", "data_dt", "data"):
+        if candidate in preassignments_df.columns:
+            date_column = candidate
+            pre_columns.append(candidate)
+            break
+    if date_column is None:
+        return leaves_df, leaves_days_df
+
+    pre_work = preassignments_df.loc[:, pre_columns].copy()
+    pre_work["employee_id"] = pre_work["employee_id"].astype(str).str.strip()
+    pre_work["state_code"] = pre_work["state_code"].astype(str).str.strip().str.upper()
+    pre_work["_date"] = pd.to_datetime(pre_work[date_column], errors="coerce").dt.date
+    pre_work = pre_work.dropna(subset=["_date"])
+    if pre_work.empty:
+        day_work = day_work.drop(columns="_date")
+        return leaves_df, day_work
+
+    pre_work["duration_min"] = pre_work["state_code"].map(shift_minutes_map)
+
+    targets = day_work.loc[unplanned_mask, ["employee_id", "_date"]].merge(
+        pre_work.loc[:, ["employee_id", "_date", "state_code", "duration_min"]],
+        on=["employee_id", "_date"],
+        how="left",
+    )
+    if targets.empty:
+        day_work = day_work.drop(columns="_date")
+        return leaves_df, day_work
+
+    targets["duration_min"] = pd.to_numeric(targets["duration_min"], errors="coerce")
+    targets["override_hours"] = targets["duration_min"] / 60.0
+
+    overrides = targets.dropna(subset=["override_hours"]).set_index(["employee_id", "_date"])
+    if not overrides.empty:
+        day_indexed = day_work.set_index(["employee_id", "_date"])
+        day_indexed.loc[overrides.index, "absence_hours_h"] = overrides["override_hours"]
+        day_indexed.loc[overrides.index, "is_planned"] = False
+        day_work = day_indexed.reset_index()
+
+    if leaves_df is None or leaves_df.empty:
+        day_work = day_work.drop(columns="_date")
+        return leaves_df, day_work
+
+    shift_work = leaves_df.copy()
+    shift_work["employee_id"] = shift_work["employee_id"].astype(str).str.strip()
+    if "data_dt" in shift_work.columns:
+        shift_work["_date"] = pd.to_datetime(shift_work["data_dt"], errors="coerce").dt.date
+    else:
+        shift_work["_date"] = pd.to_datetime(shift_work["data"], errors="coerce").dt.date
+    shift_work["turno"] = shift_work["turno"].astype(str).str.strip().str.upper()
+    shift_work["shift_duration_min"] = pd.to_numeric(
+        shift_work.get("shift_duration_min"), errors="coerce"
+    )
+
+    override_records = targets.dropna(subset=["state_code", "duration_min"])
+    if not override_records.empty:
+        for _, record in override_records.iterrows():
+            emp_id = record["employee_id"]
+            day_value = record["_date"]
+            shift_code = record["state_code"]
+            duration_value = record["duration_min"]
+            key_mask = (
+                (shift_work["employee_id"] == emp_id)
+                & (shift_work["_date"] == day_value)
+            )
+            if not key_mask.any():
+                continue
+            match_mask = key_mask & shift_work["turno"].eq(shift_code)
+            if match_mask.any():
+                shift_work.loc[match_mask, "shift_duration_min"] = duration_value
+            shift_work.loc[key_mask & ~match_mask, "shift_duration_min"] = 0.0
+            shift_work.loc[key_mask, "is_planned"] = False
+
+    shift_work = shift_work.drop(columns="_date")
+    day_work = day_work.drop(columns="_date")
+
+    return shift_work, day_work
+
+
+__all__ = ["load_leaves", "apply_unplanned_leave_durations"]

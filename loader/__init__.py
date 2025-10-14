@@ -41,7 +41,7 @@ from .employees import (
 )
 from .gap_pairs import build_gap_pairs
 from .history import load_history
-from .leaves import load_leaves
+from .leaves import apply_unplanned_leave_durations, load_leaves
 from .preassignments import load_preassignments
 from .locks import load_locks, split_locks, validate_locks
 from .shifts import (
@@ -238,6 +238,13 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         os.path.join(data_dir, "preassignments.csv"),
         employees_df,
         calendar_df,
+    )
+
+    leaves_df, leaves_days_df = apply_unplanned_leave_durations(
+        leaves_df,
+        leaves_days_df,
+        preassignments_df,
+        shifts_df,
     )
 
     return LoadedData(
