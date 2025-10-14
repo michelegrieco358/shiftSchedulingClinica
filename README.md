@@ -1,6 +1,17 @@
-# Shift Scheduling Clinica Loader
+# Shift Scheduling Clinica
 
-Questo repository contiene il loader dei dati per il progetto di pianificazione turni della clinica.
+Repository di supporto al progetto di pianificazione turni per una clinica
+ospedaliera. Il codice fornisce tre blocchi principali:
+
+* **Loader (`loader/`)** – normalizza i file CSV di input e costruisce i
+  DataFrame necessari al solver.
+* **Preprocessing (`src/preprocessing/`)** – calcola i bilanci progressivi e i
+  coefficienti di penalità dinamici richiesti dal modello.
+* **Modello (`src/model/`)** – definisce il problema CP-SAT con vincoli su orari,
+  notti, riposi e fairness, come descritto nella documentazione di progetto.
+
+La cartella `data/` contiene esempi di input, mentre `scripts/` raccoglie gli
+strumenti di validazione per i dati e le configurazioni.
 
 ## Requisiti
 
@@ -12,7 +23,8 @@ pip install -r requirements.txt
 
 ## Utilizzo
 
-Per eseguire il caricamento completo dei dati usando i file CSV forniti nella cartella data/:
+Per eseguire l'intero caricamento dati usando i file CSV forniti nella cartella
+`data/`:
 
 ```bash
 python -m loader --config config.yaml --data-dir data
@@ -24,9 +36,12 @@ Opzionalmente è possibile esportare i DataFrame intermedi in CSV di debug:
 python -m loader --config config.yaml --data-dir data --export-csv
 ```
 
-I file verranno salvati nella cartella `_expanded` all'interno della directory dati.
-Per scegliere una destinazione alternativa è possibile indicare `--export-dir` (percorso
-assoluto o relativo alla directory dati).
+I file verranno salvati nella cartella `_expanded` all'interno della directory
+dati. Per scegliere una destinazione alternativa è possibile indicare
+`--export-dir` (percorso assoluto o relativo alla directory dati).
+
+Il loader può essere integrato nel solver principale tramite la funzione
+`load_context` che restituisce un `ModelContext` pronto per la risoluzione.
 
 ## Limiti orari caricati per dipendente
 
