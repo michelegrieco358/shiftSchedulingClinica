@@ -219,13 +219,30 @@ def build_model(context: ModelContext) -> ModelArtifacts:
                     model.Add(var <= state_var)
 
     sn_code = "SN" if "SN" in state_codes else None
+    night_codes = _resolve_night_codes(
+        context.cfg if isinstance(context.cfg, Mapping) else {}
+    )
+    day_codes = _resolve_day_codes(
+        context.cfg if isinstance(context.cfg, Mapping) else {}
+    )
     prev_day_index = _build_previous_day_index(bundle)
     next_day_index = _build_next_day_index(bundle)
     history_prev_night = _collect_prev_night_pairs(context.history, eid_of, did_of)
 
-    restricted_after_night = tuple(
+    restricted_after_night_list: list[str] = [
         state for state in ("R", "M", "F") if state in state_codes
-    )
+    ]
+    for code in day_codes:
+        normalized = str(code).strip().upper()
+        if (
+            normalized
+            and normalized in state_codes
+            and normalized not in night_codes
+            and normalized != sn_code
+            and normalized not in restricted_after_night_list
+        ):
+            restricted_after_night_list.append(normalized)
+    restricted_after_night = tuple(restricted_after_night_list)
 
     if sn_code is not None:
         for emp_idx in range(num_employees):
@@ -1023,6 +1040,28 @@ def _resolve_night_codes(cfg: Mapping[str, Any] | None) -> set[str]:
                 codes.add(code_str)
     if not codes:
         codes.add("N")
+    return codes
+
+
+def _resolve_day_codes(cfg: Mapping[str, Any] | None) -> set[str]:
+    if not isinstance(cfg, Mapping):
+        return {"M", "P"}
+    shift_types = cfg.get("shift_types")
+    codes: set[str] = set()
+    if isinstance(shift_types, Mapping):
+        raw_codes = shift_types.get("day_codes", [])
+        if isinstance(raw_codes, str):
+            raw_iterable = [raw_codes]
+        elif isinstance(raw_codes, Iterable):
+            raw_iterable = list(raw_codes)
+        else:
+            raw_iterable = [raw_codes]
+        for code in raw_iterable:
+            code_str = str(code).strip().upper()
+            if code_str:
+                codes.add(code_str)
+    if not codes:
+        codes.update({"M", "P"})
     return codes
 
 
@@ -3647,55 +3686,6 @@ def _add_night_pattern_constraints(
                 elif rest_first is not None and not first_forced_absence:
                     model.Add(rest_first == 1).OnlyEnforceIf(first_night.Not())
 
-    if p_code is None:
-        single_recovery["violations"] = single_recovery_flags
-        return result
-
-    for emp_idx in range(num_employees):
-        for day_idx in range(num_days):
-            p_var = state_vars.get((emp_idx, day_idx, p_code))
-            if p_var is None:
-                continue
-
-            next_idx = next_day_index.get(day_idx)
-            if next_idx is None:
-                continue
-            rest_var = state_vars.get((emp_idx, next_idx, rest_code))
-            if rest_var is None:
-                continue
-            absence_next = (
-                state_vars.get((emp_idx, next_idx, absence_code))
-                if absence_code is not None
-                else None
-            )
-            forced_absence_next = (
-                absence_next is not None
-                and (emp_idx, next_idx) in forced_absence_pairs
-            )
-
-            prev_idx = prev_day_index.get(day_idx)
-            if prev_idx is not None:
-                prev_night_var = _ensure_state_indicator(
-                    model,
-                    state_vars,
-                    emp_idx,
-                    prev_idx,
-                    night_states,
-                    indicator_cache,
-                    "is_night",
-                )
-                if prev_night_var is None:
-                    continue
-                if forced_absence_next and absence_next is not None:
-                    model.Add(absence_next == 1).OnlyEnforceIf([prev_night_var, p_var])
-                else:
-                    model.Add(rest_var == 1).OnlyEnforceIf([prev_night_var, p_var])
-            elif (emp_idx, day_idx) in history_prev_night:
-                if forced_absence_next and absence_next is not None:
-                    model.Add(absence_next == 1).OnlyEnforceIf(p_var)
-                else:
-                    model.Add(rest_var == 1).OnlyEnforceIf(p_var)
-
     single_recovery["violations"] = single_recovery_flags
     return result
 
@@ -3713,78 +3703,9 @@ def _add_night_to_day_penalties(
     )
     result: dict[str, Any] = {"violations": {}, "weight": weight}
 
-    if weight <= 0:
-        return result
-
-    state_code_set = {str(code).strip().upper() for code in state_codes}
-    night_codes = _resolve_night_codes(
-        context.cfg if isinstance(context.cfg, Mapping) else {}
-    )
-    night_states = tuple(code for code in night_codes if code in state_code_set)
-    if not night_states:
-        return result
-
-    p_code = "P" if "P" in state_code_set else None
-    if p_code is None:
-        return result
-
-    eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
-    date_of: Mapping[int, object] = bundle.get("date_of", {})  # type: ignore[assignment]
-    num_employees = int(bundle.get("num_employees", len(eid_of)))
-    num_days = int(bundle.get("num_days", len(date_of)))
-    if num_employees <= 0 or num_days <= 0:
-        return result
-
-    day_flags = rest_violation_by_day if isinstance(rest_violation_by_day, Mapping) else {}
-    indicator_cache: dict[tuple[int, int, tuple[str, ...]], cp_model.IntVar] = {}
-    dummy_flags: dict[tuple[int, int], cp_model.BoolVar] = {}
-    violations: dict[tuple[int, int], cp_model.BoolVar] = {}
-
-    for emp_idx in range(num_employees):
-        for day_idx in range(num_days):
-            night_var = _ensure_state_indicator(
-                model,
-                state_vars,
-                emp_idx,
-                day_idx,
-                night_states,
-                indicator_cache,
-                "is_night",
-            )
-            if night_var is None:
-                continue
-
-            next_idx = next_day_index.get(day_idx)
-            if next_idx is None:
-                continue
-
-            p_var = state_vars.get((emp_idx, next_idx, p_code))
-            if p_var is None:
-                continue
-
-            rest_flag = day_flags.get((emp_idx, next_idx))
-            if rest_flag is None:
-                rest_flag = dummy_flags.get((emp_idx, next_idx))
-                if rest_flag is None:
-                    rest_flag = model.NewBoolVar(
-                        f"rest11_violation_absent_e{emp_idx}_d{next_idx}"
-                    )
-                    model.Add(rest_flag == 0)
-                    dummy_flags[(emp_idx, next_idx)] = rest_flag
-
-            violation_var = model.NewBoolVar(
-                f"night_to_day_violation_e{emp_idx}_d{day_idx}"
-            )
-            model.AddBoolAnd([night_var, p_var, rest_flag.Not()]).OnlyEnforceIf(
-                violation_var
-            )
-            model.AddBoolOr(
-                [violation_var, night_var.Not(), p_var.Not(), rest_flag]
-            )
-
-            violations[(emp_idx, day_idx)] = violation_var
-
-    result["violations"] = violations
+    # La transizione notte → turno diurno viene ora impedita da un vincolo hard.
+    # Manteniamo la struttura di ritorno, ma non generiamo più variabili di
+    # penalità superflue.
     return result
 
 

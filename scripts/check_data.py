@@ -344,7 +344,7 @@ def _check_shifts(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
     rows, columns = _read_csv_dicts(path)
     _require_columns(
         columns,
-        {"shift_id", "start", "end", "duration_min", "crosses_midnight"},
+        {"shift_id", "start", "end", "break_min", "duration_min", "crosses_midnight"},
         path.name,
     )
 
@@ -366,6 +366,7 @@ def _check_shifts(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
             seen[sid] = row
 
         duration = _parse_int(row["duration_min"], f"{path.name}: duration_min")
+        break_min = _parse_int(row["break_min"], f"{path.name}: break_min")
         crosses = _parse_int(row["crosses_midnight"], f"{path.name}: crosses_midnight")
         if crosses not in {0, 1}:
             raise ValidationError(
@@ -373,7 +374,13 @@ def _check_shifts(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
             )
 
         if sid in {"R", "SN", "F"}:
-            if duration != 0 or crosses != 0 or row["start"] or row["end"]:
+            if (
+                duration != 0
+                or break_min != 0
+                or crosses != 0
+                or row["start"]
+                or row["end"]
+            ):
                 raise ValidationError(
                     f"{path.name}: turno {sid} deve avere duration_min=0, crosses_midnight=0 e start/end vuoti"
                 )
@@ -382,6 +389,11 @@ def _check_shifts(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
         if duration <= 0:
             raise ValidationError(
                 f"{path.name}: turno {sid} deve avere duration_min > 0"
+            )
+
+        if break_min < 0:
+            raise ValidationError(
+                f"{path.name}: break_min non può essere negativo per il turno {sid}"
             )
 
         for col in ("start", "end"):
@@ -399,6 +411,21 @@ def _check_shifts(path: Path) -> tuple[list[dict[str, str]], DatasetSummary]:
                 raise ValidationError(
                     f"{path.name}: orario fuori range '{value}' per turno {sid}"
                 )
+
+        start_min = int(row["start"].split(":")[0]) * 60 + int(row["start"].split(":")[1])
+        end_min = int(row["end"].split(":")[0]) * 60 + int(row["end"].split(":")[1])
+        raw_duration = (
+            end_min - start_min if crosses == 0 else (24 * 60 - start_min + end_min)
+        )
+        if break_min >= raw_duration:
+            raise ValidationError(
+                f"{path.name}: break_min {break_min} per turno {sid} deve essere inferiore alla durata {raw_duration}"
+            )
+        expected_duration = raw_duration - break_min
+        if duration != expected_duration:
+            raise ValidationError(
+                f"{path.name}: duration_min per turno {sid} deve essere {expected_duration} (ottenuto {duration})"
+            )
 
     return rows, DatasetSummary(label=path.name, rows=len(rows))
 
