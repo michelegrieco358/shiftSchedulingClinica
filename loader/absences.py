@@ -16,6 +16,9 @@ _ABSENCE_REQUIRED_COLUMNS = {
     "type",
 }
 
+_TRUE_VALUES = {"1", "true", "t", "yes", "y", "si", "sì"}
+_FALSE_VALUES = {"0", "false", "f", "no", "n"}
+
 
 def _rename_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy of ``df`` with legacy column names normalised."""
@@ -39,6 +42,26 @@ def _validate_absence_dates(df: pd.DataFrame) -> None:
             "Intervallo di assenza non valido: date_from deve essere <= date_to. "
             f"Righe: {bad_rows.to_dict(orient='records')}"
         )
+
+
+def _coerce_optional_bool(series: pd.Series, default: bool) -> pd.Series:
+    """Return a boolean Series parsed from ``series`` with ``default`` fallback."""
+
+    result = []
+    for value in series:
+        if isinstance(value, (bool, int)) and value in (0, 1, True, False):
+            result.append(bool(value))
+            continue
+        text = str(value).strip().lower()
+        if text in _TRUE_VALUES:
+            result.append(True)
+        elif text in _FALSE_VALUES:
+            result.append(False)
+        elif text == "":
+            result.append(default)
+        else:
+            result.append(default)
+    return pd.Series(result, index=series.index, dtype=bool)
 
 
 def load_absences(path: str) -> pd.DataFrame:
@@ -65,10 +88,27 @@ def load_absences(path: str) -> pd.DataFrame:
         )
 
     normalized["type"] = normalized["type"].astype(str).str.strip().str.upper()
+
+    planned_series: pd.Series | None = None
+    if "is_planned" in df.columns:
+        planned_series = _coerce_optional_bool(df["is_planned"], default=True)
+    elif "planned" in df.columns:
+        planned_series = _coerce_optional_bool(df["planned"], default=True)
+    elif "is_unplanned" in df.columns:
+        planned_series = ~_coerce_optional_bool(df["is_unplanned"], default=False)
+    elif "unplanned" in df.columns:
+        planned_series = ~_coerce_optional_bool(df["unplanned"], default=False)
+
+    if planned_series is None:
+        normalized["is_planned"] = True
+    else:
+        normalized["is_planned"] = planned_series.astype(bool).reset_index(drop=True)
+
     _validate_absence_dates(normalized)
 
     normalized = normalized.drop_duplicates(
-        subset=["employee_id", "date_from", "date_to", "type"], keep="first"
+        subset=["employee_id", "date_from", "date_to", "type", "is_planned"],
+        keep="first",
     ).reset_index(drop=True)
 
     return normalized
@@ -90,7 +130,14 @@ def explode_absences_by_day(
 
     if abs_df.empty:
         return pd.DataFrame(
-            columns=["employee_id", "date", "type", "is_absent", "absence_hours_h"]
+            columns=[
+                "employee_id",
+                "date",
+                "type",
+                "is_absent",
+                "absence_hours_h",
+                "is_planned",
+            ]
         )
 
     absences = abs_df.copy()
@@ -103,13 +150,24 @@ def explode_absences_by_day(
     absences = absences[absences["date_from"] <= absences["date_to"]].copy()
     if absences.empty:
         return pd.DataFrame(
-            columns=["employee_id", "date", "type", "is_absent", "absence_hours_h"]
+            columns=[
+                "employee_id",
+                "date",
+                "type",
+                "is_absent",
+                "absence_hours_h",
+                "is_planned",
+            ]
         )
 
+    planned_series = absences.get("is_planned")
     records = []
     for row in absences.itertuples(index=False):
         day_range = pd.date_range(row.date_from, row.date_to, freq="D")
         for day in day_range:
+            is_planned = True
+            if planned_series is not None:
+                is_planned = bool(getattr(row, "is_planned"))
             records.append(
                 {
                     "employee_id": row.employee_id,
@@ -117,6 +175,7 @@ def explode_absences_by_day(
                     "type": row.type,
                     "is_absent": True,
                     "absence_hours_h": float(absence_hours_h),
+                    "is_planned": is_planned,
                 }
             )
 
