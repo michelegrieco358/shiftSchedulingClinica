@@ -1,6 +1,6 @@
 date,reparto_id,shift_code,employee_id,lock_type
 2025-11-01,ortopedia,M,E019,MUST_DO
 2025-11-01,degenza,M,E001,MUST_DO
-2025-11-02,degenza,N,E033,MUST_DO
+2025-11-02,degenza,N,E033,FORBIDDEN
 2025-11-02,ortopedia,P,E042,FORBIDDEN
 2025-11-03,degenza,P,E012,FORBIDDEN
