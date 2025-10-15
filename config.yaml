@@ -4,7 +4,6 @@ horizon:
 
 rest_rules:
   min_between_shifts_h: 11
-  post_night_rest_h: 48
   rest11_penalty_weight: 1.0
   weekly_rest_penalty_weight: 1.0
 
@@ -49,7 +48,6 @@ defaults:
     max_per_month: 8
     extra_consecutive_penalty_weight: 1.0
     single_night_recovery_penalty_weight: 1.0
-    night_to_day_penalty_weight: 1.0
   fairness:
     night_weight: 0.0
     weekend_weight: 0.0

@@ -54,6 +54,9 @@ from .shifts import (
 from .utils import LoaderError, _parse_date
 
 
+POST_NIGHT_GAP_WINDOW_H = 48
+
+
 @dataclass
 class LoadedData:
     cfg: dict
@@ -168,7 +171,7 @@ def load_all(config_path: str, data_dir: str) -> LoadedData:
         [
             value
             for value in (
-                rest_rules.get("post_night_rest_h"),
+                POST_NIGHT_GAP_WINDOW_H,
                 rest_rules.get("min_between_shifts_h"),
             )
             if isinstance(value, (int, float)) and value > 0

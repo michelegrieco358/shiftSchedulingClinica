@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterable, List, Mapping
 DUE_HOUR_OBJECTIVE_SCALE = 1000
 CONSECUTIVE_NIGHT_OBJECTIVE_SCALE = 1000
 SINGLE_NIGHT_RECOVERY_OBJECTIVE_SCALE = 1000
-NIGHT_TO_DAY_OBJECTIVE_SCALE = 1000
 REST11_OBJECTIVE_SCALE = 1000
 WEEKLY_REST_OBJECTIVE_SCALE = 1000
 CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
@@ -95,8 +94,6 @@ class ModelArtifacts:
     consecutive_night_penalty_weight: float
     single_night_recovery_penalties: Dict[tuple[int, int], cp_model.BoolVar]
     single_night_recovery_penalty_weight: float
-    night_to_day_penalties: Dict[tuple[int, int], cp_model.BoolVar]
-    night_to_day_penalty_weight: float
     rest11_penalty_weight: float
     rest_violation_pairs: Dict[tuple[int, int, int], cp_model.BoolVar]
     rest_violation_by_day: Dict[tuple[int, int], cp_model.BoolVar]
@@ -304,16 +301,6 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     )
     rest_info = _add_rest_constraints(context, model, assign_vars, bundle)
     rest_day_info = _add_rest_day_windows(context, model, state_vars, bundle, state_codes)
-    night_to_day_info = _add_night_to_day_penalties(
-        context,
-        model,
-        state_vars,
-        state_codes,
-        bundle,
-        next_day_index,
-        rest_info["day_flags"],
-    )
-
     rest11_weight = _resolve_rest11_penalty_weight(
         context.cfg if isinstance(context.cfg, Mapping) else None
     )
@@ -332,9 +319,6 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     single_night_info = pattern_info.get("single_night_recovery", {}) if isinstance(pattern_info, Mapping) else {}
     objective_terms.extend(
         _build_single_night_recovery_objective_terms(single_night_info)
-    )
-    objective_terms.extend(
-        _build_night_to_day_objective_terms(night_to_day_info)
     )
     objective_terms.extend(
         _build_night_fairness_objective_terms(model, context, bundle, night_info)
@@ -386,8 +370,6 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         consecutive_night_penalty_weight=float(night_info.get("penalty_weight", 0.0)),
         single_night_recovery_penalties=single_night_penalties,
         single_night_recovery_penalty_weight=single_night_weight,
-        night_to_day_penalties=night_to_day_info["violations"],
-        night_to_day_penalty_weight=float(night_to_day_info.get("weight", 0.0)),
         rest11_penalty_weight=rest11_weight,
         rest_violation_pairs=rest_info["pair_violations"],
         rest_violation_by_day=rest_info["day_flags"],
@@ -2343,24 +2325,6 @@ def _build_single_night_recovery_objective_terms(
     return [var * coeff for var in violations.values()]
 
 
-def _build_night_to_day_objective_terms(
-    night_to_day_info: Mapping[str, Any]
-) -> List[cp_model.LinearExpr]:
-    violations: Mapping[tuple[int, int], cp_model.BoolVar] = night_to_day_info.get("violations", {})  # type: ignore[assignment]
-    if not violations:
-        return []
-
-    weight = float(night_to_day_info.get("weight", 0.0) or 0.0)
-    if weight <= 0:
-        return []
-
-    coeff = int(round(weight * NIGHT_TO_DAY_OBJECTIVE_SCALE))
-    if coeff <= 0:
-        coeff = 1
-
-    return [var * coeff for var in violations.values()]
-
-
 def _build_night_fairness_objective_terms(
     model: cp_model.CpModel,
     context: ModelContext,
@@ -3308,43 +3272,6 @@ def _resolve_single_night_recovery_penalty_weight(cfg: Mapping[str, Any] | None)
     return 0.0
 
 
-def _resolve_night_to_day_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
-    if not isinstance(cfg, Mapping):
-        return 0.0
-
-    def _extract(mapping: Mapping[str, Any] | None) -> float | None:
-        if not isinstance(mapping, Mapping):
-            return None
-        for key in (
-            "night_to_day_penalty_weight",
-            "penalty_night_to_day_transition",
-            "penalty_night_to_day",
-            "penalty_after_single_night",
-        ):
-            raw = mapping.get(key)
-            if raw is None:
-                continue
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            if value >= 0:
-                return value
-        return None
-
-    direct = _extract(cfg.get("night"))
-    if direct is not None:
-        return direct
-
-    defaults = cfg.get("defaults")
-    if isinstance(defaults, Mapping):
-        fallback = _extract(defaults.get("night"))
-        if fallback is not None:
-            return fallback
-
-    return 0.0
-
-
 def _resolve_rest11_penalty_weight(cfg: Mapping[str, Any] | None) -> float:
     if not isinstance(cfg, Mapping):
         return 0.0
@@ -3688,26 +3615,6 @@ def _add_night_pattern_constraints(
 
     single_recovery["violations"] = single_recovery_flags
     return result
-
-def _add_night_to_day_penalties(
-    context: ModelContext,
-    model: cp_model.CpModel,
-    state_vars: Dict[tuple[int, int, str], cp_model.IntVar],
-    state_codes: Iterable[str],
-    bundle: Mapping[str, object],
-    next_day_index: Mapping[int, int | None],
-    rest_violation_by_day: Mapping[tuple[int, int], cp_model.BoolVar],
-) -> Mapping[str, Any]:
-    weight = _resolve_night_to_day_penalty_weight(
-        context.cfg if isinstance(context.cfg, Mapping) else None
-    )
-    result: dict[str, Any] = {"violations": {}, "weight": weight}
-
-    # La transizione notte → turno diurno viene ora impedita da un vincolo hard.
-    # Manteniamo la struttura di ritorno, ma non generiamo più variabili di
-    # penalità superflue.
-    return result
-
 
 def _add_night_constraints(
     context: ModelContext,
