@@ -72,8 +72,7 @@ permettere il tuning senza modifiche al codice:
 
 - `fairness.night_weight` e `fairness.weekend_weight` controllano
   rispettivamente la distribuzione equa dei turni notturni e dei weekend/festivi.
-- `night.single_night_recovery_penalty_weight` e
-  `night.night_to_day_penalty_weight` regolano le penalit�� sui pattern post-notte.
+- `night.single_night_recovery_penalty_weight` regola le penalit�� sui pattern post-notte.
 - Restano invariati i pesi gi�� presenti
   (`rest_rules.rest11_penalty_weight`, `rest_rules.weekly_rest_penalty_weight`,
   `night.extra_consecutive_penalty_weight`, `cross.penalty_weight`,
