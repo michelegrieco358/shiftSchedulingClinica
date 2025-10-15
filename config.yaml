@@ -1,6 +1,6 @@
 horizon:
   start_date: 2025-11-01
-  end_date: 2025-11-07
+  end_date: 2025-11-30
 
 rest_rules:
   min_between_shifts_h: 11
