@@ -1,6 +1,10 @@
 reparto_id,shift_code,enabled,start_override,end_override
-ortopedia,P,true,,
-ortopedia,N,false,,
 degenza,M,true,06:30,
 degenza,P,true,,
 degenza,N,true,,
+pronto_soccorso,M,true,07:00,
+pronto_soccorso,P,true,,
+pronto_soccorso,N,true,,
+ambulatorio,M,true,07:30,13:30
+ambulatorio,P,false,,
+ambulatorio,N,false,,

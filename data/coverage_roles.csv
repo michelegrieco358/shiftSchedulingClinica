@@ -1,6 +1,12 @@
 coverage_code,shift_code,reparto_id,gruppo,ruolo,min_ruolo
-STD,M,degenza,base,infermiere,6
-STD,M,degenza,capo,caposala,1
-STD,P,degenza,base,infermiere,6
-STD,N,degenza,base,infermiere,4
-STD,N,degenza,capo,caposala,1
+DEG_STD,M,degenza,base,infermiere,5
+DEG_STD,M,degenza,capo,caposala,1
+DEG_STD,P,degenza,base,infermiere,5
+DEG_STD,N,degenza,base,infermiere,3
+PS_STD,M,pronto_soccorso,base,infermiere,4
+PS_STD,M,pronto_soccorso,capo,caposala,1
+PS_STD,P,pronto_soccorso,base,infermiere,4
+PS_STD,P,pronto_soccorso,capo,caposala,1
+PS_STD,N,pronto_soccorso,base,infermiere,3
+AMB_STD,M,ambulatorio,base,infermiere,3
+AMB_STD,M,ambulatorio,capo,caposala,1

@@ -230,7 +230,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     history_prev_night = _collect_prev_night_pairs(context.history, eid_of, did_of)
 
     restricted_after_night_list: list[str] = [
-        state for state in ("M", "F") if state in state_codes
+        state for state in ("M", "F", "R") if state in state_codes
     ]
     for code in day_codes:
         normalized = str(code).strip().upper()

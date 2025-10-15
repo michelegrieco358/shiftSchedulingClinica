@@ -1,3 +1,7 @@
 ruolo,pool_id,reparto_id
 infermiere,A,degenza
+infermiere,B,pronto_soccorso
+infermiere,D,ambulatorio
 caposala,C,degenza
+caposala,E,pronto_soccorso
+caposala,F,ambulatorio
