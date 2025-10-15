@@ -1,4 +1,2 @@
 employee_id,date_from,date_to,type,is_planned
-E006,2025-11-10,2025-11-11,malattia,False
-E010,2025-11-15,2025-11-17,ferie,True
-E025,2025-11-22,2025-11-23,permesso,True
+E006,2025-11-04,2025-11-04,permesso,True

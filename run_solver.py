@@ -11,6 +11,13 @@ def main() -> None:
     model, artifacts, context, bundle = build_solver_from_sources("config.yaml", "data")
 
     solver = cp_model.CpSolver()
+    # Limitiamo la durata della ricerca per favorire tempi di risposta
+    # stabili anche su macchine meno potenti: dopo 120 secondi il solver
+    # restituisce la migliore soluzione fattibile trovata.
+    solver.parameters.max_time_in_seconds = 120
+    # Sfruttiamo il parallelismo disponibile per accelerare la ricerca.
+    solver.parameters.num_search_workers = 8
+
     status = solver.Solve(model)
 
     print("Solver status:", solver.StatusName(status))

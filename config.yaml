@@ -1,6 +1,6 @@
 horizon:
   start_date: 2025-11-01
-  end_date: 2025-11-30
+  end_date: 2025-11-07
 
 rest_rules:
   min_between_shifts_h: 11
@@ -16,21 +16,25 @@ fairness:
   weekend_weight: 1.0
 
 defaults:
-  allowed_roles: ["infermiere", "oss", "caposala"]
-  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive", "pronto_soccorso", "ambulatorio"]
+  allowed_roles: ["infermiere", "oss", "medico", "amministrativo", "stagista"]
+  departments: ["degenza", "pronto_soccorso", "ambulatorio"]
   weekly_rest_min_days: 1
   biweekly_rest_min_days: 2
   contract_hours_by_role_h:
     infermiere: 168
     oss: 168
-    caposala: 150
+    medico: 160
+    amministrativo: 150
+    stagista: 120
   absences:
     count_as_worked_hours: true
     full_day_hours_by_role_h:
-      INFERMIERE: 7.5
-      OSS: 7.5
-      CAPOSALA: 7.0
-    fallback_contract_daily_avg_h: 7.5
+      INFERMIERE: 7.0
+      OSS: 7.0
+      MEDICO: 7.0
+      AMMINISTRATIVO: 7.0
+      STAGISTA: 7.0
+    fallback_contract_daily_avg_h: 7.0
   rest11h:
     max_monthly_exceptions: 0
     max_consecutive_exceptions: 0
@@ -42,9 +46,9 @@ defaults:
     due_hours_penalty_weight: 1.0
   night:
     max_consecutive_nights: 3
-    can_work_night: true
-    max_per_week: 2
-    max_per_month: 8
+    can_work_night: false
+    max_per_week: 0
+    max_per_month: 0
     extra_consecutive_penalty_weight: 1.0
     single_night_recovery_penalty_weight: 1.0
     night_to_day_penalty_weight: 1.0
@@ -54,17 +58,18 @@ defaults:
 
 roles:
   infermiere:
-    can_work_night: true
-    night:
-      max_per_week: 2
-      max_per_month: 8
+    can_work_night: false
   oss:
-    can_work_night: true
-  caposala:
-    can_work_night: true
+    can_work_night: false
+  medico:
+    can_work_night: false
+  amministrativo:
+    can_work_night: false
+  stagista:
+    can_work_night: false
 
 shift_types:
-  night_codes: ["N"]
+  night_codes: []
 
 cross:
   max_shifts_month: 6
