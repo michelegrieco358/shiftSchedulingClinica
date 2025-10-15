@@ -26,6 +26,68 @@ class RoleSpec:
     hours_options: tuple[int, ...]
 
 
+SHIFT_DEFINITIONS = {
+    "M": {
+        "nome": "Mattino",
+        "start": "07:00",
+        "end": "14:30",
+        "break_min": 30,
+        "duration_min": 420,
+        "crosses_midnight": 0,
+    },
+    "P": {
+        "nome": "Pomeriggio",
+        "start": "14:00",
+        "end": "21:30",
+        "break_min": 30,
+        "duration_min": 420,
+        "crosses_midnight": 0,
+    },
+    "R": {
+        "nome": "Riposo",
+        "start": "",
+        "end": "",
+        "break_min": 0,
+        "duration_min": 0,
+        "crosses_midnight": 0,
+    },
+    "F": {
+        "nome": "Ferie",
+        "start": "",
+        "end": "",
+        "break_min": 0,
+        "duration_min": 0,
+        "crosses_midnight": 0,
+    },
+}
+
+SHIFT_ROLE_ELIGIBILITY = {
+    "M": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": True,
+    },
+    "P": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": False,
+    },
+    "R": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": True,
+    },
+    "F": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": True,
+    },
+}
+
 DEPARTMENTS = {
     "degenza": {
         "label": "Degenza",
@@ -40,6 +102,10 @@ DEPARTMENTS = {
             "M": {"infermiere": 0.20, "oss": 0.12, "medico": 0.10},
             "P": {"infermiere": 0.16, "oss": 0.10, "medico": 0.10},
         },
+        "shift_map": {
+            "M": {"enabled": True, "start_override": "06:30", "end_override": ""},
+            "P": {"enabled": True, "start_override": "", "end_override": ""},
+        },
     },
     "pronto_soccorso": {
         "label": "Pronto soccorso",
@@ -53,6 +119,10 @@ DEPARTMENTS = {
         "coverage_ratios": {
             "M": {"infermiere": 0.22, "oss": 0.14, "medico": 0.14},
             "P": {"infermiere": 0.18, "oss": 0.12, "medico": 0.12},
+        },
+        "shift_map": {
+            "M": {"enabled": True, "start_override": "07:00", "end_override": ""},
+            "P": {"enabled": True, "start_override": "", "end_override": ""},
         },
     },
     "ambulatorio": {
@@ -70,6 +140,14 @@ DEPARTMENTS = {
                 "medico": 0.40,
                 "amministrativo": 0.60,
             },
+        },
+        "shift_map": {
+            "M": {
+                "enabled": True,
+                "start_override": "07:30",
+                "end_override": "13:30",
+            },
+            "P": {"enabled": False, "start_override": "", "end_override": ""},
         },
     },
 }
@@ -340,6 +418,66 @@ def generate_role_pools() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["role", "pool_id", "reparto_id"])
 
 
+def generate_shifts() -> pd.DataFrame:
+    rows = []
+    for shift_id, cfg in SHIFT_DEFINITIONS.items():
+        rows.append(
+            {
+                "shift_id": shift_id,
+                "nome": cfg["nome"],
+                "start": cfg["start"],
+                "end": cfg["end"],
+                "break_min": cfg["break_min"],
+                "duration_min": cfg["duration_min"],
+                "crosses_midnight": cfg["crosses_midnight"],
+            }
+        )
+    columns = [
+        "shift_id",
+        "nome",
+        "start",
+        "end",
+        "break_min",
+        "duration_min",
+        "crosses_midnight",
+    ]
+    return pd.DataFrame(rows, columns=columns).sort_values("shift_id").reset_index(drop=True)
+
+
+def generate_reparto_shift_map() -> pd.DataFrame:
+    rows = []
+    for reparto_id, dept_cfg in DEPARTMENTS.items():
+        for shift_code, cfg in dept_cfg["shift_map"].items():
+            rows.append(
+                {
+                    "reparto_id": reparto_id,
+                    "shift_code": shift_code,
+                    "enabled": str(cfg["enabled"]).lower(),
+                    "start_override": cfg["start_override"],
+                    "end_override": cfg["end_override"],
+                }
+            )
+    columns = ["reparto_id", "shift_code", "enabled", "start_override", "end_override"]
+    df = pd.DataFrame(rows, columns=columns)
+    return df.sort_values(["reparto_id", "shift_code"]).reset_index(drop=True)
+
+
+def generate_shift_role_eligibility() -> pd.DataFrame:
+    rows = []
+    for shift_code, roles in SHIFT_ROLE_ELIGIBILITY.items():
+        for role, allowed in roles.items():
+            rows.append(
+                {
+                    "shift_code": shift_code,
+                    "role": role.upper(),
+                    "allowed": str(bool(allowed)),
+                }
+            )
+    return pd.DataFrame(rows, columns=["shift_code", "role", "allowed"]).sort_values(
+        ["shift_code", "role"]
+    )
+
+
 def generate_holidays() -> pd.DataFrame:
     return pd.DataFrame(
         (
@@ -362,6 +500,15 @@ def main() -> None:
     coverage_roles_df, coverage_groups_df = compute_coverage_requirements(employees_df)
     coverage_roles_df.to_csv(OUT_DIR / "coverage_roles.csv", index=False)
     coverage_groups_df.to_csv(OUT_DIR / "coverage_groups.csv", index=False)
+
+    shifts_df = generate_shifts()
+    shifts_df.to_csv(OUT_DIR / "shifts.csv", index=False)
+
+    reparto_shift_map_df = generate_reparto_shift_map()
+    reparto_shift_map_df.to_csv(OUT_DIR / "reparto_shift_map.csv", index=False)
+
+    shift_role_eligibility_df = generate_shift_role_eligibility()
+    shift_role_eligibility_df.to_csv(OUT_DIR / "shift_role_eligibility.csv", index=False)
 
     history_df = generate_history(days, employees_df)
     history_df.to_csv(OUT_DIR / "history.csv", index=False)
