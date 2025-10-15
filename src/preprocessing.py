@@ -710,7 +710,11 @@ def build_all(dfs: dict, cfg: dict) -> dict:
         subset=["slot_id", "slot_id2", "role"]
     )
 
-    emp_base = df_employees.loc[:, ["employee_id", "employee_id2", role_column, "reparto_id", "pool_id"]].copy()
+    emp_cols = ["employee_id", "employee_id2", role_column, "reparto_id", "pool_id"]
+    if "can_work_night" in df_employees.columns:
+        emp_cols.append("can_work_night")
+
+    emp_base = df_employees.loc[:, emp_cols].copy()
     emp_base = emp_base.rename(columns={role_column: "role", "reparto_id": "employee_reparto_id"})
     emp_base["role"] = emp_base["role"].astype(str).str.strip().str.upper()
     emp_base["employee_reparto_id"] = (
