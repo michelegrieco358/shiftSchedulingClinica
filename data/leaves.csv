@@ -1,3 +1,2 @@
-employee_id,start_date,end_date,type,is_planned
-E010,2025-11-12,2025-11-14,FERIE,True
-E045,2025-11-25,2025-11-26,PERMESSO,False
+employee_id,date_from,date_to,type,is_planned
+E006,2025-11-04,2025-11-04,permesso,True
