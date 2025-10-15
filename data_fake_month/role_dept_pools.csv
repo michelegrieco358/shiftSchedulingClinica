@@ -1,0 +1,10 @@
+role,pool_id,reparto_id
+infermiere,DN_NURSE,degenza
+oss,DN_OSS,degenza
+medico,DN_MED,degenza
+infermiere,PS_NURSE,pronto_soccorso
+oss,PS_OSS,pronto_soccorso
+medico,PS_MED,pronto_soccorso
+infermiere,AMB_NURSE,ambulatorio
+medico,AMB_MED,ambulatorio
+amministrativo,AMB_AMM,ambulatorio

@@ -1,0 +1,8 @@
+reparto_id,shift_code,enabled,start_override,end_override
+ambulatorio,M,true,07:30,13:30
+ambulatorio,P,false,,
+degenza,M,true,06:30,
+degenza,P,true,,
+pronto_soccorso,M,true,07:00,
+pronto_soccorso,N,true,,07:30
+pronto_soccorso,P,true,,

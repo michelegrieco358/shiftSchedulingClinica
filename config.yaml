@@ -44,9 +44,9 @@ defaults:
     due_hours_penalty_weight: 1.0
   night:
     max_consecutive_nights: 3
-    can_work_night: false
-    max_per_week: 0
-    max_per_month: 0
+    can_work_night: true
+    max_per_week: 2
+    max_per_month: 8
     extra_consecutive_penalty_weight: 1.0
     single_night_recovery_penalty_weight: 1.0
     night_to_day_penalty_weight: 1.0
@@ -56,7 +56,7 @@ defaults:
 
 roles:
   infermiere:
-    can_work_night: false
+    can_work_night: true
   oss:
     can_work_night: false
   medico:
@@ -65,7 +65,7 @@ roles:
     can_work_night: false
 
 shift_types:
-  night_codes: []
+  night_codes: ["N"]
 
 cross:
   max_shifts_month: 6

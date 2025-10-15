@@ -1,0 +1,6 @@
+shift_id,nome,start,end,break_min,duration_min,crosses_midnight
+F,Ferie,,,0,0,0
+M,Mattino,07:00,14:30,30,420,0
+N,Notte,21:00,07:30,30,630,1
+P,Pomeriggio,14:00,21:30,30,420,0
+R,Riposo,,,0,0,0
