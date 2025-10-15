@@ -1,0 +1,407 @@
+import math
+import random
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from faker import Faker
+
+
+SEED = 42
+MONTH = "2025-11"
+OUT_DIR = Path("data_fake_month")
+TARGET_SHIFTS_PER_EMP = 20
+
+random.seed(SEED)
+np.random.seed(SEED)
+fake = Faker("it_IT")
+
+
+@dataclass(frozen=True)
+class RoleSpec:
+    pool_id: str
+    min_staff: int
+    max_staff: int
+    hours_options: tuple[int, ...]
+
+
+DEPARTMENTS = {
+    "degenza": {
+        "label": "Degenza",
+        "coverage_prefix": "DEG_DAY",
+        "shifts": ("M", "P"),
+        "roles": {
+            "infermiere": RoleSpec("DN_NURSE", 12, 15, (140,)),
+            "oss": RoleSpec("DN_OSS", 6, 9, (112, 126, 140)),
+            "medico": RoleSpec("DN_MED", 4, 5, (105,)),
+        },
+        "coverage_ratios": {
+            "M": {"infermiere": 0.20, "oss": 0.12, "medico": 0.10},
+            "P": {"infermiere": 0.16, "oss": 0.10, "medico": 0.10},
+        },
+    },
+    "pronto_soccorso": {
+        "label": "Pronto soccorso",
+        "coverage_prefix": "PS_DAY",
+        "shifts": ("M", "P"),
+        "roles": {
+            "infermiere": RoleSpec("PS_NURSE", 14, 17, (168,)),
+            "oss": RoleSpec("PS_OSS", 6, 9, (168,)),
+            "medico": RoleSpec("PS_MED", 6, 7, (168,)),
+        },
+        "coverage_ratios": {
+            "M": {"infermiere": 0.22, "oss": 0.14, "medico": 0.14},
+            "P": {"infermiere": 0.18, "oss": 0.12, "medico": 0.12},
+        },
+    },
+    "ambulatorio": {
+        "label": "Ambulatorio",
+        "coverage_prefix": "AMB_DAY",
+        "shifts": ("M",),
+        "roles": {
+            "infermiere": RoleSpec("AMB_NURSE", 4, 5, (70,)),
+            "medico": RoleSpec("AMB_MED", 3, 4, (28, 42)),
+            "amministrativo": RoleSpec("AMB_AMM", 4, 6, (56,)),
+        },
+        "coverage_ratios": {
+            "M": {
+                "infermiere": 0.50,
+                "medico": 0.40,
+                "amministrativo": 0.60,
+            },
+        },
+    },
+}
+
+HOLIDAYS = {
+    f"{MONTH}-01": "Ognissanti",
+    f"{MONTH}-04": "Festività locale",
+}
+
+
+def make_days(month: str) -> pd.DatetimeIndex:
+    start = pd.to_datetime(f"{month}-01")
+    end = start + pd.offsets.MonthEnd(0)
+    return pd.date_range(start, end, freq="D")
+
+
+def generate_employees() -> pd.DataFrame:
+    rows = []
+    emp_idx = 1
+    for reparto_id, dept_cfg in DEPARTMENTS.items():
+        for role, spec in dept_cfg["roles"].items():
+            n_staff = random.randint(spec.min_staff, spec.max_staff)
+            for _ in range(n_staff):
+                employee_id = f"E{emp_idx:03d}"
+                emp_idx += 1
+                rows.append(
+                    {
+                        "employee_id": employee_id,
+                        "nome": fake.name(),
+                        "role": role,
+                        "ruolo": role,
+                        "reparto_id": reparto_id,
+                        "reparto_label": dept_cfg["label"],
+                        "ore_dovute_mese_h": random.choice(spec.hours_options),
+                        "saldo_prog_iniziale_h": random.choice([-4, -2, 0, 2, 4]),
+                        "max_balance_delta_month_h": 20,
+                        "max_month_hours_h": 200,
+                        "max_week_hours_h": 50,
+                        "can_work_night": "no",
+                        "max_nights_week": 0,
+                        "max_nights_month": 0,
+                        "saturday_count_ytd": random.randint(0, 4),
+                        "sunday_count_ytd": random.randint(0, 4),
+                        "holiday_count_ytd": random.randint(0, 3),
+                        "pool_id": spec.pool_id,
+                        "cross_max_shifts_month": "",
+                    }
+                )
+    columns = [
+        "employee_id",
+        "nome",
+        "role",
+        "ruolo",
+        "reparto_id",
+        "reparto_label",
+        "ore_dovute_mese_h",
+        "saldo_prog_iniziale_h",
+        "max_balance_delta_month_h",
+        "max_month_hours_h",
+        "max_week_hours_h",
+        "can_work_night",
+        "max_nights_week",
+        "max_nights_month",
+        "saturday_count_ytd",
+        "sunday_count_ytd",
+        "holiday_count_ytd",
+        "pool_id",
+        "cross_max_shifts_month",
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_month_plan(days: pd.DatetimeIndex) -> pd.DataFrame:
+    rows = []
+    for day in days:
+        day_str = day.strftime("%Y-%m-%d")
+        for reparto_id, dept_cfg in DEPARTMENTS.items():
+            for shift in dept_cfg["shifts"]:
+                coverage_code = f"{dept_cfg['coverage_prefix']}_{shift}"
+                rows.append(
+                    {
+                        "data": day_str,
+                        "reparto_id": reparto_id,
+                        "shift_code": shift,
+                        "coverage_code": coverage_code,
+                    }
+                )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values(["data", "reparto_id", "shift_code", "coverage_code"]).reset_index(
+        drop=True
+    )
+
+
+def compute_coverage_requirements(
+    employees_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    role_counts = (
+        employees_df.groupby(["reparto_id", "role"])["employee_id"].count().rename("staff")
+    )
+    role_counts = role_counts.reset_index()
+
+    cov_rows = []
+    group_rows = []
+    for reparto_id, dept_cfg in DEPARTMENTS.items():
+        dept_counts = role_counts.loc[role_counts["reparto_id"] == reparto_id]
+        count_lookup = {row.role: int(row.staff) for row in dept_counts.itertuples(index=False)}
+        for shift_code, ratios in dept_cfg["coverage_ratios"].items():
+            coverage_code = f"{dept_cfg['coverage_prefix']}_{shift_code}"
+            for role, ratio in ratios.items():
+                staff_available = count_lookup.get(role, 0)
+                if staff_available <= 0:
+                    continue
+                min_staff = max(1, math.ceil(staff_available * ratio))
+                cov_rows.append(
+                    {
+                        "coverage_code": coverage_code,
+                        "shift_code": shift_code,
+                        "reparto_id": reparto_id,
+                        "gruppo": role,
+                        "role": role,
+                        "ruolo": role,
+                        "min_ruolo": int(min_staff),
+                    }
+                )
+                group_rows.append(
+                    {
+                        "coverage_code": coverage_code,
+                        "shift_code": shift_code,
+                        "reparto_id": reparto_id,
+                        "gruppo": role,
+                        "total_staff": int(min_staff),
+                        "ruoli_totale": role,
+                        "overstaff_cap": "",
+                    }
+                )
+    cov_df = pd.DataFrame(
+        cov_rows,
+        columns=[
+            "coverage_code",
+            "shift_code",
+            "reparto_id",
+            "gruppo",
+            "role",
+            "ruolo",
+            "min_ruolo",
+        ],
+    )
+    groups_df = pd.DataFrame(
+        group_rows,
+        columns=[
+            "coverage_code",
+            "shift_code",
+            "reparto_id",
+            "gruppo",
+            "total_staff",
+            "ruoli_totale",
+            "overstaff_cap",
+        ],
+    )
+    return cov_df, groups_df
+
+
+def generate_history(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.DataFrame:
+    hist_days = pd.date_range(days[0] - pd.Timedelta(days=7), periods=7, freq="D")
+    history_rows = []
+    shift_choices = {dept: list(cfg["shifts"]) + ["R"] for dept, cfg in DEPARTMENTS.items()}
+    for row in employees_df.itertuples(index=False):
+        choices = shift_choices[row.reparto_id]
+        for day in hist_days:
+            turno = random.choice(choices)
+            history_rows.append(
+                {
+                    "data": day.strftime("%Y-%m-%d"),
+                    "employee_id": row.employee_id,
+                    "turno": turno,
+                }
+            )
+    return pd.DataFrame(history_rows, columns=["data", "employee_id", "turno"])
+
+
+def generate_availability(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.DataFrame:
+    availability_rows = []
+    for row in employees_df.itertuples(index=False):
+        pref_days = np.random.choice(days, size=min(3, len(days)), replace=False)
+        for day in pref_days:
+            availability_rows.append(
+                {
+                    "data": day.strftime("%Y-%m-%d"),
+                    "employee_id": row.employee_id,
+                    "turno": "ALL",
+                }
+            )
+    return pd.DataFrame(availability_rows, columns=["data", "employee_id", "turno"])
+
+
+def generate_leaves(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.DataFrame:
+    n_leaves = max(1, int(len(employees_df) * 0.04))
+    employees_sample = employees_df.sample(n_leaves, random_state=SEED)
+    leave_rows = []
+    for row in employees_sample.itertuples(index=False):
+        start_day = np.random.choice(days)
+        duration = random.randint(1, 2)
+        end_day = min(start_day + pd.Timedelta(days=duration - 1), days[-1])
+        leave_rows.append(
+            {
+                "employee_id": row.employee_id,
+                "date_from": start_day.strftime("%Y-%m-%d"),
+                "date_to": end_day.strftime("%Y-%m-%d"),
+                "type": random.choice(["ferie", "permesso"]),
+                "is_planned": True,
+            }
+        )
+    return pd.DataFrame(
+        leave_rows,
+        columns=["employee_id", "date_from", "date_to", "type", "is_planned"],
+    )
+
+
+def generate_locks(
+    month_plan_df: pd.DataFrame,
+    employees_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if month_plan_df.empty:
+        return pd.DataFrame(columns=["employee_id", "slot_id", "lock", "note"])
+
+    slots_df = month_plan_df.copy()
+    slots_df = slots_df.sort_values(["data", "reparto_id", "shift_code", "coverage_code"]).reset_index(
+        drop=True
+    )
+    slots_df.insert(0, "slot_id", range(1, len(slots_df) + 1))
+
+    slots_by_reparto = {
+        reparto: group for reparto, group in slots_df.groupby("reparto_id")
+    }
+
+    n_locks = max(1, int(len(employees_df) * 0.03))
+    selected_emps = employees_df.sample(n_locks, random_state=SEED + 1)
+
+    lock_rows = []
+    for row in selected_emps.itertuples(index=False):
+        reparto_slots = slots_by_reparto[row.reparto_id]
+        slot_row = reparto_slots.sample(1, random_state=random.randint(0, 1_000_000)).iloc[0]
+        lock_rows.append(
+            {
+                "employee_id": row.employee_id,
+                "slot_id": int(slot_row.slot_id),
+                "lock": random.choice([1, -1]),
+                "note": "",
+            }
+        )
+
+    return pd.DataFrame(lock_rows, columns=["employee_id", "slot_id", "lock", "note"])
+
+
+def generate_role_pools() -> pd.DataFrame:
+    rows = []
+    for reparto_id, dept_cfg in DEPARTMENTS.items():
+        for role, spec in dept_cfg["roles"].items():
+            rows.append(
+                {
+                    "role": role,
+                    "pool_id": spec.pool_id,
+                    "reparto_id": reparto_id,
+                }
+            )
+    return pd.DataFrame(rows, columns=["role", "pool_id", "reparto_id"])
+
+
+def generate_holidays() -> pd.DataFrame:
+    return pd.DataFrame(
+        (
+            {"data": date_str, "descrizione": descr}
+            for date_str, descr in HOLIDAYS.items()
+        ),
+        columns=["data", "descrizione"],
+    )
+
+
+def main() -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    days = make_days(MONTH)
+    employees_df = generate_employees()
+    employees_df.to_csv(OUT_DIR / "employees.csv", index=False)
+
+    month_plan_df = build_month_plan(days)
+    month_plan_df.to_csv(OUT_DIR / "month_plan.csv", index=False)
+
+    coverage_roles_df, coverage_groups_df = compute_coverage_requirements(employees_df)
+    coverage_roles_df.to_csv(OUT_DIR / "coverage_roles.csv", index=False)
+    coverage_groups_df.to_csv(OUT_DIR / "coverage_groups.csv", index=False)
+
+    history_df = generate_history(days, employees_df)
+    history_df.to_csv(OUT_DIR / "history.csv", index=False)
+
+    availability_df = generate_availability(days, employees_df)
+    availability_df.to_csv(OUT_DIR / "availability.csv", index=False)
+
+    leaves_df = generate_leaves(days, employees_df)
+    leaves_df.to_csv(OUT_DIR / "leaves.csv", index=False)
+
+    locks_df = generate_locks(month_plan_df, employees_df)
+    locks_df.to_csv(OUT_DIR / "locks.csv", index=False)
+
+    role_dept_pools_df = generate_role_pools()
+    role_dept_pools_df.to_csv(OUT_DIR / "role_dept_pools.csv", index=False)
+
+    holidays_df = generate_holidays()
+    holidays_df.to_csv(OUT_DIR / "holidays.csv", index=False)
+
+    req_summary = (
+        coverage_roles_df.groupby(["coverage_code", "shift_code", "reparto_id", "role"])[
+            "min_ruolo"
+        ]
+        .sum()
+        .reset_index()
+    )
+    daily_required = int(req_summary["min_ruolo"].sum())
+    monthly_required = daily_required * len(days)
+    estimated_capacity = int(len(employees_df) * TARGET_SHIFTS_PER_EMP)
+    utilization = monthly_required / max(estimated_capacity, 1)
+
+    print("====== REPORT ======")
+    print(f"Dipendenti: {len(employees_df)} | Giorni: {len(days)}")
+    print(f"Turni richiesti/giorno (somma min_ruolo): {daily_required}")
+    print(f"Turni richiesti nel mese: {monthly_required}")
+    print(f"Capacità stimata (turni): {estimated_capacity}")
+    print(f"Utilization stimata: {utilization:.1%} (target ~50–85%)")
+    print("====================")
+    print(f"✅ Dataset generato in: {OUT_DIR.resolve()}")
+
+
+if __name__ == "__main__":
+    main()
