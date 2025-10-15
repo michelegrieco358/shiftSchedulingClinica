@@ -68,3 +68,15 @@ E066,Dipendente 66,infermiere,infermiere,ambulatorio,Ambulatorio,156,-2,60,210,4
 E067,Dipendente 67,infermiere,infermiere,ambulatorio,Ambulatorio,150,0,60,210,46,no,0,0,2,0,0,D,6
 E068,Dipendente 68,infermiere,infermiere,ambulatorio,Ambulatorio,162,2,60,210,46,no,0,0,3,1,1,D,6
 E069,Dipendente 69,infermiere,infermiere,ambulatorio,Ambulatorio,168,-4,60,210,46,no,0,0,0,2,0,D,6
+E070,Dipendente 70,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,6,1,0,1,A,6
+E071,Dipendente 71,infermiere,infermiere,degenza,Degenza,170,0,60,220,48,yes,2,6,2,1,0,A,6
+E072,Dipendente 72,infermiere,infermiere,degenza,Degenza,166,2,60,220,48,yes,2,5,0,0,2,A,6
+E073,Dipendente 73,infermiere,infermiere,degenza,Degenza,160,-4,60,212,46,no,0,0,3,1,1,A,4
+E074,Dipendente 74,infermiere,infermiere,degenza,Degenza,174,-1,60,220,48,yes,2,6,1,2,0,A,6
+E075,Dipendente 75,infermiere,infermiere,degenza,Degenza,158,1,60,212,46,no,0,0,2,0,2,A,4
+E076,Dipendente 76,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-3,60,220,48,yes,2,6,1,1,0,B,6
+E077,Dipendente 77,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,170,0,60,220,48,yes,2,6,2,2,1,B,6
+E078,Dipendente 78,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,164,2,60,220,48,yes,2,5,0,1,2,B,6
+E079,Dipendente 79,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,160,-1,60,216,46,no,0,0,1,0,1,B,5
+E080,Dipendente 80,infermiere,infermiere,ambulatorio,Ambulatorio,150,0,60,210,46,no,0,0,2,0,1,D,5
+E081,Dipendente 81,infermiere,infermiere,ambulatorio,Ambulatorio,154,1,60,210,46,no,0,0,1,0,0,D,5
