@@ -16,20 +16,22 @@ fairness:
   weekend_weight: 1.0
 
 defaults:
-  allowed_roles: ["infermiere", "oss", "caposala"]
-  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive", "pronto_soccorso", "ambulatorio"]
+  allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
+  departments: ["degenza", "pronto_soccorso", "ambulatorio"]
   weekly_rest_min_days: 1
   biweekly_rest_min_days: 2
   contract_hours_by_role_h:
     infermiere: 168
     oss: 168
-    caposala: 150
+    medico: 160
+    amministrativo: 150
   absences:
     count_as_worked_hours: true
     full_day_hours_by_role_h:
       INFERMIERE: 7.5
       OSS: 7.5
-      CAPOSALA: 7.0
+      MEDICO: 8.0
+      AMMINISTRATIVO: 7.0
     fallback_contract_daily_avg_h: 7.5
   rest11h:
     max_monthly_exceptions: 0
@@ -60,8 +62,16 @@ roles:
       max_per_month: 8
   oss:
     can_work_night: true
-  caposala:
+    night:
+      max_per_week: 2
+      max_per_month: 8
+  medico:
     can_work_night: true
+    night:
+      max_per_week: 2
+      max_per_month: 8
+  amministrativo:
+    can_work_night: false
 
 shift_types:
   night_codes: ["N"]
