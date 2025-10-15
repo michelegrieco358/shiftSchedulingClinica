@@ -3,10 +3,12 @@ data,reparto_id,shift_code,coverage_code
 2025-11-01,degenza,P,DEG_DAY_P
 2025-11-01,pronto_soccorso,M,PS_DAY_M
 2025-11-01,pronto_soccorso,P,PS_DAY_P
+2025-11-01,ambulatorio,M,AMB_DAY_M
 2025-11-02,degenza,M,DEG_DAY_M
 2025-11-02,degenza,P,DEG_DAY_P
 2025-11-02,pronto_soccorso,M,PS_DAY_M
 2025-11-02,pronto_soccorso,P,PS_DAY_P
+2025-11-02,ambulatorio,M,AMB_DAY_M
 2025-11-03,degenza,M,DEG_DAY_M
 2025-11-03,degenza,P,DEG_DAY_P
 2025-11-03,pronto_soccorso,M,PS_DAY_M

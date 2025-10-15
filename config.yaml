@@ -12,20 +12,19 @@ preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 1.0
-  weekend_weight: 1.0
+  night_weight: 0.0
+  weekend_weight: 0.0
 
 defaults:
-  allowed_roles: ["infermiere", "oss", "medico", "amministrativo", "stagista"]
+  allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
   departments: ["degenza", "pronto_soccorso", "ambulatorio"]
   weekly_rest_min_days: 1
   biweekly_rest_min_days: 2
   contract_hours_by_role_h:
-    infermiere: 168
-    oss: 168
+    infermiere: 140
+    oss: 140
     medico: 160
-    amministrativo: 150
-    stagista: 120
+    amministrativo: 120
   absences:
     count_as_worked_hours: true
     full_day_hours_by_role_h:
@@ -33,7 +32,6 @@ defaults:
       OSS: 7.0
       MEDICO: 7.0
       AMMINISTRATIVO: 7.0
-      STAGISTA: 7.0
     fallback_contract_daily_avg_h: 7.0
   rest11h:
     max_monthly_exceptions: 0
@@ -53,8 +51,8 @@ defaults:
     single_night_recovery_penalty_weight: 1.0
     night_to_day_penalty_weight: 1.0
   fairness:
-    night_weight: 1.0
-    weekend_weight: 1.0
+    night_weight: 0.0
+    weekend_weight: 0.0
 
 roles:
   infermiere:
@@ -64,8 +62,6 @@ roles:
   medico:
     can_work_night: false
   amministrativo:
-    can_work_night: false
-  stagista:
     can_work_night: false
 
 shift_types:
