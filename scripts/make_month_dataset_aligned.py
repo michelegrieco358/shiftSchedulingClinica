@@ -76,6 +76,14 @@ SHIFT_DEFINITIONS = {
         "duration_min": 630,
         "crosses_midnight": 1,
     },
+    "SN": {
+        "nome": "Smonto notte",
+        "start": "",
+        "end": "",
+        "break_min": 0,
+        "duration_min": 0,
+        "crosses_midnight": 0,
+    },
     "R": {
         "nome": "Riposo",
         "start": "",
@@ -112,6 +120,12 @@ SHIFT_ROLE_ELIGIBILITY = {
         "oss": True,
         "medico": True,
         "amministrativo": False,
+    },
+    "SN": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": True,
     },
     "R": {
         "infermiere": True,
@@ -361,12 +375,14 @@ def generate_history(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.D
     for row in employees_df.itertuples(index=False):
         dept_cfg = DEPARTMENTS[row.reparto_id]
         role_spec = dept_cfg["roles"][row.role]
-        base_choices = list(dept_cfg["shifts"])
+        base_choices = [shift for shift in dept_cfg["shifts"]]
         if not role_spec.can_work_night:
             base_choices = [shift for shift in base_choices if shift != "N"]
         choices = base_choices + ["R"]
         for day in hist_days:
             turno = random.choice(choices)
+            if turno == "N" and "N" not in base_choices:
+                turno = "R"
             history_rows.append(
                 {
                     "data": day.strftime("%Y-%m-%d"),
