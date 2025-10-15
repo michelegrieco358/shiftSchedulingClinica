@@ -2,3 +2,4 @@ pandas>=1.5
 PyYAML>=6.0
 numpy>=1.24
 ortools>=9.8
+Faker>=19.3
