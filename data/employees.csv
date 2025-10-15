@@ -1,51 +1,70 @@
 employee_id,nome,role,ruolo,reparto_id,reparto_label,ore_dovute_mese_h,saldo_prog_iniziale_h,max_balance_delta_month_h,max_month_hours_h,max_week_hours_h,can_work_night,max_nights_week,max_nights_month,saturday_count_ytd,sunday_count_ytd,holiday_count_ytd,pool_id,cross_max_shifts_month
-E001,Dipendente 01,infermiere,infermiere,degenza,Degenza,84,-2,60,220,48,yes,2,6,2,1,0,A,20
-E002,Dipendente 02,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,3,2,1,A,20
-E003,Dipendente 03,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,4,3,0,A,20
-E004,Dipendente 04,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,5,1,1,A,20
-E005,Dipendente 05,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,2,2,0,A,20
-E006,Dipendente 06,infermiere,infermiere,degenza,Degenza,88,-2,60,220,48,yes,2,6,3,3,1,A,20
-E007,Dipendente 07,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,4,1,0,A,20
-E008,Dipendente 08,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,5,2,1,A,20
-E009,Dipendente 09,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,2,3,0,A,20
-E010,Dipendente 10,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,3,1,1,A,20
-E011,Dipendente 11,infermiere,infermiere,degenza,Degenza,86,-2,60,220,48,yes,2,6,4,2,0,A,20
-E012,Dipendente 12,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,5,3,1,A,20
-E013,Dipendente 13,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,2,1,0,A,20
-E014,Dipendente 14,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,3,2,1,A,20
-E015,Dipendente 15,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,4,3,0,A,20
-E016,Dipendente 16,infermiere,infermiere,degenza,Degenza,84,-2,60,220,48,yes,2,6,5,1,1,A,20
-E017,Dipendente 17,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,2,2,0,A,20
-E018,Dipendente 18,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,3,3,1,A,20
-E019,Dipendente 19,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,4,1,0,A,20
-E020,Dipendente 20,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,5,2,1,A,20
-E021,Dipendente 21,infermiere,infermiere,degenza,Degenza,88,-2,60,220,48,yes,2,6,2,3,0,A,20
-E022,Dipendente 22,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,3,1,1,A,20
-E023,Dipendente 23,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,4,2,0,A,20
-E024,Dipendente 24,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,5,3,1,A,20
-E025,Dipendente 25,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,2,1,0,A,20
-E026,Dipendente 26,infermiere,infermiere,degenza,Degenza,86,-2,60,220,48,yes,2,6,3,2,1,A,20
-E027,Dipendente 27,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,4,3,0,A,20
-E028,Dipendente 28,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,yes,2,6,5,1,1,A,20
-E029,Dipendente 29,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,2,2,0,A,20
-E030,Dipendente 30,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,yes,2,6,3,3,1,A,20
-E031,Dipendente 31,infermiere,infermiere,degenza,Degenza,84,-2,60,220,48,yes,2,6,4,1,0,A,20
-E032,Dipendente 32,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,yes,2,6,5,2,1,A,20
-E033,Dipendente 33,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,no,0,0,2,3,0,A,20
-E034,Dipendente 34,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,no,0,0,3,1,1,A,20
-E035,Dipendente 35,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,no,0,0,4,2,0,A,20
-E036,Dipendente 36,infermiere,infermiere,degenza,Degenza,88,-2,60,220,48,no,0,0,5,3,1,A,20
-E037,Dipendente 37,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,no,0,0,2,1,0,A,20
-E038,Dipendente 38,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,no,0,0,3,2,1,A,20
-E039,Dipendente 39,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,no,0,0,4,3,0,A,20
-E040,Dipendente 40,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,no,0,0,5,1,1,A,20
-E041,Dipendente 41,infermiere,infermiere,degenza,Degenza,86,-2,60,220,48,no,0,0,2,2,0,A,20
-E042,Dipendente 42,infermiere,infermiere,degenza,Degenza,88,0,60,220,48,no,0,0,3,3,1,A,20
-E043,Dipendente 43,infermiere,infermiere,degenza,Degenza,84,0,60,220,48,no,0,0,4,1,0,A,20
-E044,Dipendente 44,infermiere,infermiere,degenza,Degenza,86,0,60,220,48,no,0,0,5,2,1,A,20
-E045,Dipendente 45,caposala,caposala,degenza,Degenza,118,0,40,200,45,yes,2,6,4,3,1,C,12
-E046,Dipendente 46,caposala,caposala,degenza,Degenza,120,-1,40,200,45,yes,2,6,5,4,2,C,12
-E047,Dipendente 47,caposala,caposala,degenza,Degenza,122,1,40,200,45,yes,2,6,4,5,1,C,12
-E048,Dipendente 48,caposala,caposala,degenza,Degenza,118,0,40,200,45,yes,2,6,5,3,2,C,12
-E049,Dipendente 49,caposala,caposala,degenza,Degenza,120,-1,40,200,45,yes,2,6,4,4,1,C,12
-E050,Dipendente 50,caposala,caposala,degenza,Degenza,122,1,40,200,45,yes,2,6,5,5,2,C,12
+E001,Dipendente 01,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,0,0,A,3
+E002,Dipendente 02,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,1,1,A,
+E003,Dipendente 03,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,2,0,A,0
+E004,Dipendente 04,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,0,1,A,6
+E005,Dipendente 05,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,1,0,A,6
+E006,Dipendente 06,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,2,1,A,6
+E007,Dipendente 07,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,0,0,A,6
+E008,Dipendente 08,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,1,1,A,6
+E009,Dipendente 09,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,2,0,A,6
+E010,Dipendente 10,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,0,1,A,6
+E011,Dipendente 11,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,1,0,A,6
+E012,Dipendente 12,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,2,1,A,6
+E013,Dipendente 13,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,0,0,A,6
+E014,Dipendente 14,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,1,1,A,6
+E015,Dipendente 15,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,2,0,A,6
+E016,Dipendente 16,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,0,1,A,6
+E017,Dipendente 17,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,1,0,A,6
+E018,Dipendente 18,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,2,1,A,6
+E019,Dipendente 19,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,0,0,A,6
+E020,Dipendente 20,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,1,1,A,6
+E021,Dipendente 21,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,2,0,A,6
+E022,Dipendente 22,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,0,1,A,6
+E023,Dipendente 23,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,1,0,A,6
+E024,Dipendente 24,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,2,1,A,6
+E025,Dipendente 25,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,0,0,A,6
+E026,Dipendente 26,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,1,1,A,6
+E027,Dipendente 27,infermiere,infermiere,degenza,Degenza,168,0,60,220,48,yes,2,4,2,2,0,A,6
+E028,Dipendente 28,infermiere,infermiere,degenza,Degenza,160,2,60,220,48,no,0,0,3,0,1,A,6
+E029,Dipendente 29,infermiere,infermiere,degenza,Degenza,168,-4,60,220,48,yes,2,6,0,1,0,A,6
+E030,Dipendente 30,infermiere,infermiere,degenza,Degenza,168,-2,60,220,48,yes,2,5,1,2,1,A,6
+E031,Dipendente 31,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,0,60,220,48,yes,2,4,2,0,0,B,6
+E032,Dipendente 32,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,2,60,220,48,yes,2,6,3,1,1,B,6
+E033,Dipendente 33,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,176,-4,60,220,48,no,0,0,0,2,0,B,6
+E034,Dipendente 34,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-2,60,220,48,yes,2,5,1,0,1,B,6
+E035,Dipendente 35,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,0,60,220,48,yes,2,4,2,1,0,B,6
+E036,Dipendente 36,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,2,60,220,48,yes,2,6,3,2,1,B,6
+E037,Dipendente 37,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,176,-4,60,220,48,no,0,0,0,0,0,B,6
+E038,Dipendente 38,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-2,60,220,48,yes,2,5,1,1,1,B,6
+E039,Dipendente 39,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,0,60,220,48,yes,2,4,2,2,0,B,6
+E040,Dipendente 40,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,2,60,220,48,yes,2,6,3,0,1,B,6
+E041,Dipendente 41,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,176,-4,60,220,48,no,0,0,0,1,0,B,6
+E042,Dipendente 42,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-2,60,220,48,yes,2,5,1,2,1,B,6
+E043,Dipendente 43,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,0,60,220,48,yes,2,4,2,0,0,B,6
+E044,Dipendente 44,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,2,60,220,48,yes,2,6,3,1,1,B,6
+E045,Dipendente 45,caposala,caposala,degenza,Degenza,150,-4,40,200,45,yes,2,5,0,2,0,C,12
+E046,Dipendente 46,caposala,caposala,degenza,Degenza,152,-2,40,200,45,yes,2,4,1,0,1,C,12
+E047,Dipendente 47,caposala,caposala,degenza,Degenza,150,0,40,200,45,yes,2,6,2,1,0,C,12
+E048,Dipendente 48,caposala,caposala,degenza,Degenza,154,2,40,200,45,yes,2,5,3,2,1,C,12
+E049,Dipendente 49,caposala,caposala,pronto_soccorso,Pronto Soccorso,150,-4,40,200,45,yes,2,4,0,0,0,E,12
+E050,Dipendente 50,caposala,caposala,pronto_soccorso,Pronto Soccorso,152,-2,40,200,45,yes,2,6,1,1,1,E,12
+E051,Dipendente 51,caposala,caposala,pronto_soccorso,Pronto Soccorso,150,0,40,200,45,yes,2,5,2,2,0,E,12
+E052,Dipendente 52,caposala,caposala,ambulatorio,Ambulatorio,150,2,40,200,45,yes,2,4,3,0,1,F,12
+E053,Dipendente 53,caposala,caposala,ambulatorio,Ambulatorio,152,-4,40,200,45,yes,2,6,0,1,0,F,12
+E054,Dipendente 54,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-2,60,220,48,yes,2,5,1,2,1,B,6
+E055,Dipendente 55,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,0,60,220,48,yes,2,4,2,0,0,B,6
+E056,Dipendente 56,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,176,2,60,220,48,no,0,0,3,1,1,B,6
+E057,Dipendente 57,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-4,60,220,48,yes,2,6,0,2,0,B,6
+E058,Dipendente 58,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-2,60,220,48,yes,2,5,1,0,1,B,6
+E059,Dipendente 59,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,162,0,60,220,48,yes,2,4,2,1,0,B,6
+E060,Dipendente 60,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,176,2,60,220,48,no,0,0,3,2,1,B,6
+E061,Dipendente 61,infermiere,infermiere,pronto_soccorso,Pronto Soccorso,168,-4,60,220,48,yes,2,6,0,0,0,B,6
+E062,Dipendente 62,infermiere,infermiere,ambulatorio,Ambulatorio,156,-2,60,210,46,no,0,0,1,1,1,D,6
+E063,Dipendente 63,infermiere,infermiere,ambulatorio,Ambulatorio,150,0,60,210,46,no,0,0,2,2,0,D,6
+E064,Dipendente 64,infermiere,infermiere,ambulatorio,Ambulatorio,162,2,60,210,46,no,0,0,3,0,1,D,6
+E065,Dipendente 65,infermiere,infermiere,ambulatorio,Ambulatorio,168,-4,60,210,46,no,0,0,0,1,0,D,6
+E066,Dipendente 66,infermiere,infermiere,ambulatorio,Ambulatorio,156,-2,60,210,46,no,0,0,1,2,1,D,6
+E067,Dipendente 67,infermiere,infermiere,ambulatorio,Ambulatorio,150,0,60,210,46,no,0,0,2,0,0,D,6
+E068,Dipendente 68,infermiere,infermiere,ambulatorio,Ambulatorio,162,2,60,210,46,no,0,0,3,1,1,D,6
+E069,Dipendente 69,infermiere,infermiere,ambulatorio,Ambulatorio,168,-4,60,210,46,no,0,0,0,2,0,D,6

@@ -4,7 +4,7 @@ horizon:
 
 rest_rules:
   min_between_shifts_h: 11
-  post_night_rest_h: 36
+  post_night_rest_h: 48
   rest11_penalty_weight: 1.0
   weekly_rest_penalty_weight: 1.0
 
@@ -12,21 +12,23 @@ preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 0.0
-  weekend_weight: 0.0
+  night_weight: 1.0
+  weekend_weight: 1.0
 
 defaults:
-  allowed_roles: ["infermiere", "caposala"]
-  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive"]
-  weekly_rest_min_days: 0
-  biweekly_rest_min_days: 0
+  allowed_roles: ["infermiere", "oss", "caposala"]
+  departments: ["ortopedia", "cardiologia", "degenza", "pneumologia", "malattie infettive", "pronto_soccorso", "ambulatorio"]
+  weekly_rest_min_days: 1
+  biweekly_rest_min_days: 2
   contract_hours_by_role_h:
     infermiere: 168
+    oss: 168
     caposala: 150
   absences:
     count_as_worked_hours: true
     full_day_hours_by_role_h:
       INFERMIERE: 7.5
+      OSS: 7.5
       CAPOSALA: 7.0
     fallback_contract_daily_avg_h: 7.5
   rest11h:
@@ -47,20 +49,26 @@ defaults:
     single_night_recovery_penalty_weight: 1.0
     night_to_day_penalty_weight: 1.0
   fairness:
-    night_weight: 0.0
-    weekend_weight: 0.0
+    night_weight: 1.0
+    weekend_weight: 1.0
+
 roles:
   infermiere:
     can_work_night: true
     night:
       max_per_week: 2
       max_per_month: 8
+  oss:
+    can_work_night: true
   caposala:
     can_work_night: true
+
 shift_types:
   night_codes: ["N"]
+
 cross:
   max_shifts_month: 6
   penalty_weight: 1.5
+
 locks:
   allow_cross_reparto: true
