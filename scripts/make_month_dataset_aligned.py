@@ -5,7 +5,29 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from faker import Faker
+
+try:
+    from faker import Faker
+except ModuleNotFoundError:  # pragma: no cover - fallback for environments senza Faker
+    class _FallbackFaker:
+        _NAMES = [
+            "Mario Rossi",
+            "Giulia Bianchi",
+            "Luca Conti",
+            "Sara Greco",
+            "Paolo Ferri",
+            "Anna Romano",
+        ]
+
+        def name(self) -> str:
+            return random.choice(self._NAMES)
+
+    class Faker:  # type: ignore[misc]
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._impl = _FallbackFaker()
+
+        def name(self) -> str:  # pragma: no cover - delega al fallback
+            return self._impl.name()
 
 
 SEED = 42
@@ -24,6 +46,9 @@ class RoleSpec:
     min_staff: int
     max_staff: int
     hours_options: tuple[int, ...]
+    can_work_night: bool = False
+    max_nights_week: int = 0
+    max_nights_month: int = 0
 
 
 SHIFT_DEFINITIONS = {
@@ -42,6 +67,14 @@ SHIFT_DEFINITIONS = {
         "break_min": 30,
         "duration_min": 420,
         "crosses_midnight": 0,
+    },
+    "N": {
+        "nome": "Notte",
+        "start": "21:00",
+        "end": "07:30",
+        "break_min": 30,
+        "duration_min": 630,
+        "crosses_midnight": 1,
     },
     "R": {
         "nome": "Riposo",
@@ -74,6 +107,12 @@ SHIFT_ROLE_ELIGIBILITY = {
         "medico": True,
         "amministrativo": False,
     },
+    "N": {
+        "infermiere": True,
+        "oss": True,
+        "medico": True,
+        "amministrativo": False,
+    },
     "R": {
         "infermiere": True,
         "oss": True,
@@ -91,43 +130,47 @@ SHIFT_ROLE_ELIGIBILITY = {
 DEPARTMENTS = {
     "degenza": {
         "label": "Degenza",
-        "coverage_prefix": "DEG_DAY",
-        "shifts": ("M", "P"),
+        "coverage_codes": {"M": "DEG_DAY_M", "P": "DEG_DAY_P", "N": "DEG_NIGHT_N"},
+        "shifts": ("M", "P", "N"),
         "roles": {
-            "infermiere": RoleSpec("DN_NURSE", 12, 15, (140,)),
-            "oss": RoleSpec("DN_OSS", 6, 9, (112, 126, 140)),
-            "medico": RoleSpec("DN_MED", 4, 5, (105,)),
+            "infermiere": RoleSpec("DN_NURSE", 12, 15, (140,), True, 2, 8),
+            "oss": RoleSpec("DN_OSS", 6, 9, (112, 126, 140), True, 2, 6),
+            "medico": RoleSpec("DN_MED", 4, 5, (105,), False, 0, 0),
         },
         "coverage_ratios": {
             "M": {"infermiere": 0.20, "oss": 0.12, "medico": 0.10},
             "P": {"infermiere": 0.16, "oss": 0.10, "medico": 0.10},
+            "N": {"infermiere": 0.12, "oss": 0.08},
         },
         "shift_map": {
             "M": {"enabled": True, "start_override": "06:30", "end_override": ""},
             "P": {"enabled": True, "start_override": "", "end_override": ""},
+            "N": {"enabled": True, "start_override": "", "end_override": "07:30"},
         },
     },
     "pronto_soccorso": {
         "label": "Pronto soccorso",
-        "coverage_prefix": "PS_DAY",
-        "shifts": ("M", "P"),
+        "coverage_codes": {"M": "PS_DAY_M", "P": "PS_DAY_P", "N": "PS_NIGHT_N"},
+        "shifts": ("M", "P", "N"),
         "roles": {
-            "infermiere": RoleSpec("PS_NURSE", 14, 17, (168,)),
-            "oss": RoleSpec("PS_OSS", 6, 9, (168,)),
-            "medico": RoleSpec("PS_MED", 6, 7, (168,)),
+            "infermiere": RoleSpec("PS_NURSE", 14, 17, (168,), True, 3, 10),
+            "oss": RoleSpec("PS_OSS", 6, 9, (168,), True, 2, 8),
+            "medico": RoleSpec("PS_MED", 6, 7, (168,), True, 2, 6),
         },
         "coverage_ratios": {
             "M": {"infermiere": 0.22, "oss": 0.14, "medico": 0.14},
             "P": {"infermiere": 0.18, "oss": 0.12, "medico": 0.12},
+            "N": {"infermiere": 0.16, "oss": 0.10, "medico": 0.14},
         },
         "shift_map": {
             "M": {"enabled": True, "start_override": "07:00", "end_override": ""},
             "P": {"enabled": True, "start_override": "", "end_override": ""},
+            "N": {"enabled": True, "start_override": "", "end_override": "07:30"},
         },
     },
     "ambulatorio": {
         "label": "Ambulatorio",
-        "coverage_prefix": "AMB_DAY",
+        "coverage_codes": {"M": "AMB_DAY_M"},
         "shifts": ("M",),
         "roles": {
             "infermiere": RoleSpec("AMB_NURSE", 4, 5, (70,)),
@@ -186,9 +229,9 @@ def generate_employees() -> pd.DataFrame:
                         "max_balance_delta_month_h": 20,
                         "max_month_hours_h": 200,
                         "max_week_hours_h": 50,
-                        "can_work_night": "no",
-                        "max_nights_week": 0,
-                        "max_nights_month": 0,
+                        "can_work_night": "yes" if spec.can_work_night else "no",
+                        "max_nights_week": spec.max_nights_week if spec.can_work_night else 0,
+                        "max_nights_month": spec.max_nights_month if spec.can_work_night else 0,
                         "saturday_count_ytd": random.randint(0, 4),
                         "sunday_count_ytd": random.randint(0, 4),
                         "holiday_count_ytd": random.randint(0, 3),
@@ -226,7 +269,7 @@ def build_month_plan(days: pd.DatetimeIndex) -> pd.DataFrame:
         day_str = day.strftime("%Y-%m-%d")
         for reparto_id, dept_cfg in DEPARTMENTS.items():
             for shift in dept_cfg["shifts"]:
-                coverage_code = f"{dept_cfg['coverage_prefix']}_{shift}"
+                coverage_code = dept_cfg["coverage_codes"][shift]
                 rows.append(
                     {
                         "data": day_str,
@@ -257,7 +300,7 @@ def compute_coverage_requirements(
         dept_counts = role_counts.loc[role_counts["reparto_id"] == reparto_id]
         count_lookup = {row.role: int(row.staff) for row in dept_counts.itertuples(index=False)}
         for shift_code, ratios in dept_cfg["coverage_ratios"].items():
-            coverage_code = f"{dept_cfg['coverage_prefix']}_{shift_code}"
+            coverage_code = dept_cfg["coverage_codes"][shift_code]
             for role, ratio in ratios.items():
                 staff_available = count_lookup.get(role, 0)
                 if staff_available <= 0:
@@ -315,9 +358,13 @@ def compute_coverage_requirements(
 def generate_history(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.DataFrame:
     hist_days = pd.date_range(days[0] - pd.Timedelta(days=7), periods=7, freq="D")
     history_rows = []
-    shift_choices = {dept: list(cfg["shifts"]) + ["R"] for dept, cfg in DEPARTMENTS.items()}
     for row in employees_df.itertuples(index=False):
-        choices = shift_choices[row.reparto_id]
+        dept_cfg = DEPARTMENTS[row.reparto_id]
+        role_spec = dept_cfg["roles"][row.role]
+        base_choices = list(dept_cfg["shifts"])
+        if not role_spec.can_work_night:
+            base_choices = [shift for shift in base_choices if shift != "N"]
+        choices = base_choices + ["R"]
         for day in hist_days:
             turno = random.choice(choices)
             history_rows.append(
@@ -335,9 +382,10 @@ def generate_availability(days: pd.DatetimeIndex, employees_df: pd.DataFrame) ->
     for row in employees_df.itertuples(index=False):
         pref_days = np.random.choice(days, size=min(3, len(days)), replace=False)
         for day in pref_days:
+            day_ts = pd.Timestamp(day)
             availability_rows.append(
                 {
-                    "data": day.strftime("%Y-%m-%d"),
+                    "data": day_ts.strftime("%Y-%m-%d"),
                     "employee_id": row.employee_id,
                     "turno": "ALL",
                 }
@@ -350,14 +398,14 @@ def generate_leaves(days: pd.DatetimeIndex, employees_df: pd.DataFrame) -> pd.Da
     employees_sample = employees_df.sample(n_leaves, random_state=SEED)
     leave_rows = []
     for row in employees_sample.itertuples(index=False):
-        start_day = np.random.choice(days)
+        start_day = pd.Timestamp(np.random.choice(days))
         duration = random.randint(1, 2)
         end_day = min(start_day + pd.Timedelta(days=duration - 1), days[-1])
         leave_rows.append(
             {
                 "employee_id": row.employee_id,
                 "date_from": start_day.strftime("%Y-%m-%d"),
-                "date_to": end_day.strftime("%Y-%m-%d"),
+                "date_to": pd.Timestamp(end_day).strftime("%Y-%m-%d"),
                 "type": random.choice(["ferie", "permesso"]),
                 "is_planned": True,
             }
@@ -391,7 +439,14 @@ def generate_locks(
     lock_rows = []
     for row in selected_emps.itertuples(index=False):
         reparto_slots = slots_by_reparto[row.reparto_id]
-        slot_row = reparto_slots.sample(1, random_state=random.randint(0, 1_000_000)).iloc[0]
+        role_spec = DEPARTMENTS[row.reparto_id]["roles"][row.role]
+        if not role_spec.can_work_night:
+            eligible_slots = reparto_slots[reparto_slots["shift_code"] != "N"]
+            if eligible_slots.empty:
+                eligible_slots = reparto_slots
+        else:
+            eligible_slots = reparto_slots
+        slot_row = eligible_slots.sample(1, random_state=random.randint(0, 1_000_000)).iloc[0]
         lock_rows.append(
             {
                 "employee_id": row.employee_id,
