@@ -1,4 +1,6 @@
 coverage_code,shift_code,reparto_id,gruppo,total_staff,ruoli_totale,overstaff_cap
-STD,M,degenza,base,8,infermiere,
-STD,M,degenza,capo,2,caposala,
-STD,P,degenza,base,8,infermiere,
+STD,M,degenza,base,6,infermiere,
+STD,M,degenza,capo,1,caposala,
+STD,P,degenza,base,6,infermiere,
+STD,N,degenza,base,4,infermiere,
+STD,N,degenza,capo,1,caposala,
