@@ -41,6 +41,7 @@ defaults:
   balance:
     max_balance_delta_month_h: 40
     due_hours_penalty_weight: 1.0
+    final_balance_penalty_weight: 0.5
   night:
     max_consecutive_nights: 3
     can_work_night: true
