@@ -4,15 +4,15 @@ horizon:
 
 rest_rules:
   min_between_shifts_h: 11
-  rest11_penalty_weight: 1.0
-  weekly_rest_penalty_weight: 1.0
+  rest11_penalty_weight: 100.0
+  weekly_rest_penalty_weight: 100.0
 
 preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 0.3
-  weekend_weight: 0.2
+  night_weight: 1.0
+  weekend_weight: 1.0
 
 defaults:
   allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
@@ -37,21 +37,21 @@ defaults:
     max_consecutive_exceptions: 1
   overstaffing:
     enabled: true
-    group_cap_default: 1
+    group_cap_default: 2
   balance:
-    max_balance_delta_month_h: 40
-    due_hours_penalty_weight: 1.0
-    final_balance_penalty_weight: 0.5
+    max_balance_delta_month_h: 36
+    due_hours_penalty_weight: 5.0
+    final_balance_penalty_weight: 5.0
   night:
     max_consecutive_nights: 3
     can_work_night: true
     max_per_week: 2
     max_per_month: 8
-    extra_consecutive_penalty_weight: 1.0
-    single_night_recovery_penalty_weight: 1.0
+    extra_consecutive_penalty_weight: 10.0
+    single_night_recovery_penalty_weight: 10.0
   fairness:
-    night_weight: 0.3
-    weekend_weight: 0.2
+    night_weight: 0.5
+    weekend_weight: 0.5
 
 roles:
   infermiere:
@@ -68,7 +68,7 @@ shift_types:
 
 cross:
   max_shifts_month: 6
-  penalty_weight: 1.5
+  penalty_weight: 10.0
 
 locks:
   allow_cross_reparto: true
