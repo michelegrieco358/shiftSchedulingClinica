@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import warnings
 from typing import Optional
 
 from ortools.sat.python import cp_model
 
+from src.objective_report import (
+    compute_objective_breakdown,
+    write_objective_breakdown_report,
+)
 from src.solver import build_solver_from_sources
 
 
@@ -83,6 +88,11 @@ def main() -> None:
     print("Objective value:", solver.ObjectiveValue())
     print("Assegnazioni candidate:", len(artifacts.assign_vars))
     print("Dipendenti considerati:", len(context.employees))
+
+    breakdown = compute_objective_breakdown(solver, artifacts)
+    report_path = Path("objective_breakdown.txt")
+    write_objective_breakdown_report(breakdown, report_path)
+    print(f"Report funzione obiettivo salvato in: {report_path}")
 
 
 if __name__ == "__main__":

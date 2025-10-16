@@ -90,7 +90,9 @@ def _objective_terms_for_weight(weight: float) -> list[tuple[str, int]]:
     }
     night_info = {"night_by_day": night_vars}
 
-    terms = _build_night_fairness_objective_terms(model, context, context.bundle, night_info)
+    terms, _metadata = _build_night_fairness_objective_terms(
+        model, context, context.bundle, night_info
+    )
     if not terms:
         return []
 

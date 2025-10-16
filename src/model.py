@@ -71,6 +71,15 @@ class ModelContext:
 
 
 
+@dataclass(frozen=True)
+class ObjectiveTermContribution:
+    component: str
+    var: cp_model.IntVar
+    coeff: int
+    is_complement: bool = False
+    label: str | None = None
+
+
 @dataclass
 class ModelArtifacts:
     """Colleziona riferimenti alle variabili e agli indici usati in solver."""
@@ -102,6 +111,7 @@ class ModelArtifacts:
     rest_day_flags: Dict[tuple[int, int], cp_model.BoolVar]
     weekly_rest_violations: Dict[tuple[int, int], cp_model.BoolVar]
     weekly_rest_penalty_weight: float
+    objective_terms: tuple[ObjectiveTermContribution, ...] = tuple()
 
 
 def build_model(context: ModelContext) -> ModelArtifacts:
@@ -309,39 +319,64 @@ def build_model(context: ModelContext) -> ModelArtifacts:
     )
 
     objective_terms: List[cp_model.LinearExpr] = []
-    objective_terms.extend(
-        _build_due_hour_objective_terms(context, bundle, hour_info)
+    objective_metadata: list[ObjectiveTermContribution] = []
+
+    terms, details = _build_due_hour_objective_terms(context, bundle, hour_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_final_balance_objective_terms(context, bundle, hour_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_consecutive_night_objective_terms(night_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    single_night_info = (
+        pattern_info.get("single_night_recovery", {})
+        if isinstance(pattern_info, Mapping)
+        else {}
     )
-    objective_terms.extend(
-        _build_final_balance_objective_terms(context, bundle, hour_info)
+    terms, details = _build_single_night_recovery_objective_terms(single_night_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_night_fairness_objective_terms(
+        model, context, bundle, night_info
     )
-    objective_terms.extend(_build_consecutive_night_objective_terms(night_info))
-    single_night_info = pattern_info.get("single_night_recovery", {}) if isinstance(pattern_info, Mapping) else {}
-    objective_terms.extend(
-        _build_single_night_recovery_objective_terms(single_night_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_weekend_fairness_objective_terms(
+        model, context, bundle, assign_vars
     )
-    objective_terms.extend(
-        _build_night_fairness_objective_terms(model, context, bundle, night_info)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_rest11_objective_terms(
+        rest_info["pair_violations"], rest11_weight
     )
-    objective_terms.extend(
-        _build_weekend_fairness_objective_terms(
-            model, context, bundle, assign_vars
-        )
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_weekly_rest_objective_terms(
+        rest_day_info["weekly_violations"], weekly_rest_weight
     )
-    objective_terms.extend(
-        _build_rest11_objective_terms(rest_info["pair_violations"], rest11_weight)
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_cross_assignment_objective_terms(
+        context, bundle, assign_vars
     )
-    objective_terms.extend(
-        _build_weekly_rest_objective_terms(
-            rest_day_info["weekly_violations"], weekly_rest_weight
-        )
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
+
+    terms, details = _build_preassignment_objective_terms(
+        context, bundle, state_vars
     )
-    objective_terms.extend(
-        _build_cross_assignment_objective_terms(context, bundle, assign_vars)
-    )
-    objective_terms.extend(
-        _build_preassignment_objective_terms(context, bundle, state_vars)
-    )
+    objective_terms.extend(terms)
+    objective_metadata.extend(details)
 
     if objective_terms:
         model.Minimize(sum(objective_terms))
@@ -378,6 +413,7 @@ def build_model(context: ModelContext) -> ModelArtifacts:
         rest_day_flags=rest_day_info["rest_day_flags"],
         weekly_rest_violations=rest_day_info["weekly_violations"],
         weekly_rest_penalty_weight=weekly_rest_weight,
+        objective_terms=tuple(objective_metadata),
     )
 
 
@@ -2148,7 +2184,7 @@ def _build_due_hour_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     hour_info: Mapping[str, Mapping[tuple[int, str], cp_model.IntVar]],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     under_vars: Mapping[tuple[int, str], cp_model.IntVar] = hour_info.get(  # type: ignore[assignment]
         "monthly_under_effective",
         {},
@@ -2158,11 +2194,11 @@ def _build_due_hour_objective_terms(
         {},
     )
     if not under_vars and not over_vars:
-        return []
+        return [], []
 
     weight_under, weight_over = _resolve_due_hour_penalty_weights(context.cfg)
     if weight_under <= 0 and weight_over <= 0:
-        return []
+        return [], []
 
     role_minutes, fallback_minutes = _resolve_role_daily_minutes(context.cfg)
     try:
@@ -2177,7 +2213,7 @@ def _build_due_hour_objective_terms(
     employee_ids = list(dict.fromkeys(employee_ids))
 
     if not employee_ids:
-        return []
+        return [], []
 
     start_balances = _extract_start_balance_series(context)
     balance_series = pd.Series(
@@ -2190,6 +2226,7 @@ def _build_due_hour_objective_terms(
     coeffs_over = coeffs_df["c_over"].to_dict() if not coeffs_df.empty else {}
 
     terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
     for emp_idx, month_id in keys:
         emp_id = emp_of.get(emp_idx)
         if emp_id is None:
@@ -2209,6 +2246,13 @@ def _build_due_hour_objective_terms(
             if scaled <= 0:
                 scaled = 1
             terms.append(under_var * scaled)
+            contributions.append(
+                ObjectiveTermContribution(
+                    component="ore_mensili_sotto",
+                    var=under_var,
+                    coeff=scaled,
+                )
+            )
 
         over_var = over_vars.get((emp_idx, month_id))
         if over_var is not None and weight_over > 0:
@@ -2218,25 +2262,32 @@ def _build_due_hour_objective_terms(
             if scaled <= 0:
                 scaled = 1
             terms.append(over_var * scaled)
+            contributions.append(
+                ObjectiveTermContribution(
+                    component="ore_mensili_sopra",
+                    var=over_var,
+                    coeff=scaled,
+                )
+            )
 
-    return terms
+    return terms, contributions
 
 
 def _build_final_balance_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     hour_info: Mapping[str, Mapping[tuple[int, str], cp_model.IntVar]],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     abs_vars: Mapping[tuple[int, str], cp_model.IntVar] = hour_info.get(  # type: ignore[assignment]
         "final_balance_abs",
         {},
     )
     if not abs_vars:
-        return []
+        return [], []
 
     weight = _resolve_final_balance_penalty_weight(context.cfg)
     if weight <= 0:
-        return []
+        return [], []
 
     role_minutes, fallback_minutes = _resolve_role_daily_minutes(context.cfg)
     try:
@@ -2250,7 +2301,7 @@ def _build_final_balance_objective_terms(
     employee_ids = list(dict.fromkeys(employee_ids))
 
     if not employee_ids:
-        return []
+        return [], []
 
     start_balances = _extract_start_balance_series(context)
     balance_series = pd.Series(
@@ -2263,6 +2314,7 @@ def _build_final_balance_objective_terms(
     coeffs_over = coeffs_df["c_over"].to_dict() if not coeffs_df.empty else {}
 
     terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
     for (emp_idx, _), abs_var in abs_vars.items():
         emp_id = emp_of.get(emp_idx)
         if emp_id is None:
@@ -2285,44 +2337,75 @@ def _build_final_balance_objective_terms(
             scaled = 1
 
         terms.append(abs_var * scaled)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="bilancio_finale",
+                var=abs_var,
+                coeff=scaled,
+            )
+        )
 
-    return terms
+    return terms, contributions
 
 
 def _build_consecutive_night_objective_terms(
     night_info: Mapping[str, Any]
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     totals: Mapping[int, cp_model.IntVar] = night_info.get("extra_totals", {})  # type: ignore[assignment]
     if not totals:
-        return []
+        return [], []
 
     weight = float(night_info.get("penalty_weight", 0.0) or 0.0)
     if weight <= 0:
-        return []
+        return [], []
 
     coeff = int(round(weight * CONSECUTIVE_NIGHT_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
-    return [total * coeff for total in totals.values()]
+    terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+    for total in totals.values():
+        terms.append(total * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="notti_consecutive",
+                var=total,
+                coeff=coeff,
+            )
+        )
+
+    return terms, contributions
 
 
 def _build_single_night_recovery_objective_terms(
     single_night_info: Mapping[str, Any]
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     violations: Mapping[tuple[int, int], cp_model.BoolVar] = single_night_info.get("violations", {})  # type: ignore[assignment]
     if not violations:
-        return []
+        return [], []
 
     weight = float(single_night_info.get("weight", 0.0) or 0.0)
     if weight <= 0:
-        return []
+        return [], []
 
     coeff = int(round(weight * SINGLE_NIGHT_RECOVERY_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
-    return [var * coeff for var in violations.values()]
+    terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+    for var in violations.values():
+        terms.append(var * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="recupero_singola_notte",
+                var=var,
+                coeff=coeff,
+            )
+        )
+
+    return terms, contributions
 
 
 def _build_night_fairness_objective_terms(
@@ -2330,37 +2413,37 @@ def _build_night_fairness_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     night_info: Mapping[str, Any],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     night_by_day: Mapping[tuple[int, int], cp_model.BoolVar] = night_info.get("night_by_day", {})  # type: ignore[assignment]
     if not night_by_day:
-        return []
+        return [], []
 
     employees = context.employees
     if employees is None or employees.empty:
-        return []
+        return [], []
 
     eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
     if not eid_of:
-        return []
+        return [], []
 
     num_days = int(bundle.get("num_days", 0))
     if num_days <= 0:
-        return []
+        return [], []
 
     cfg = context.cfg if isinstance(context.cfg, Mapping) else {}
     night_codes = _resolve_night_codes(cfg)
     if not night_codes:
-        return []
+        return [], []
 
     weight_scale = _resolve_night_fairness_weight(cfg)
     weight_coeff = int(round(weight_scale * NIGHT_FAIRNESS_WEIGHT_SCALE))
     if weight_coeff <= 0:
-        return []
+        return [], []
 
     history_counts = _count_history_night_totals(context.history, night_codes, eid_of)
     emp_to_dept = _build_employee_reparto_index(employees, bundle)
     if not emp_to_dept:
-        return []
+        return [], []
 
     night_eligible = _build_employee_night_eligibility_map(employees, eid_of)
     weight_float_map = _build_employee_night_weight_map(employees, eid_of)
@@ -2375,9 +2458,11 @@ def _build_night_fairness_objective_terms(
         dept_members.setdefault(dept, []).append(emp_idx)
 
     if not dept_members:
-        return []
+        return [], []
 
-    objective_terms: list[cp_model.LinearExpr] = []
+    terms: list[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+
     for dept, members in dept_members.items():
         if len(members) < 2:
             continue
@@ -2401,7 +2486,7 @@ def _build_night_fairness_objective_terms(
         total_var = model.NewIntVar(0, weighted_sum_max, f"night_fair_total_{dept_slug}")
 
         total_expr_terms: list[cp_model.LinearExpr] = []
-        penalty_terms: list[cp_model.LinearExpr] = []
+        penalty_entries: list[tuple[int, cp_model.IntVar]] = []
 
         for emp_idx in positive_members:
             history_value = history_counts.get(emp_idx, 0)
@@ -2430,17 +2515,27 @@ def _build_night_fairness_objective_terms(
             model.Add(deviation_var >= scaled_total_expr - total_var)
             model.Add(deviation_var >= total_var - scaled_total_expr)
 
-            penalty_terms.append(weight * deviation_var)
+            penalty_entries.append((weight, deviation_var))
 
-        if not total_expr_terms or not penalty_terms:
+        if not total_expr_terms or not penalty_entries:
             continue
 
         model.Add(total_var == sum(total_expr_terms))
 
-        penalty_expr = sum(penalty_terms)
-        objective_terms.append(penalty_expr * weight_coeff)
+        for weight_value, deviation_var in penalty_entries:
+            scaled_coeff = weight_value * weight_coeff
+            if scaled_coeff <= 0:
+                continue
+            terms.append(deviation_var * scaled_coeff)
+            contributions.append(
+                ObjectiveTermContribution(
+                    component="fairness_notti",
+                    var=deviation_var,
+                    coeff=scaled_coeff,
+                )
+            )
 
-    return objective_terms
+    return terms, contributions
 
 
 def _build_weekend_fairness_objective_terms(
@@ -2448,31 +2543,31 @@ def _build_weekend_fairness_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     if not assign_vars:
-        return []
+        return [], []
 
     gamma = _resolve_weekend_fairness_weight(
         context.cfg if isinstance(context.cfg, Mapping) else None
     )
     if gamma <= 0:
-        return []
+        return [], []
 
     employees = context.employees
     if employees is None or employees.empty:
-        return []
+        return [], []
 
     eid_of: Mapping[str, int] = bundle.get("eid_of", {})  # type: ignore[assignment]
     if not eid_of:
-        return []
+        return [], []
 
     slot_date2: Mapping[int, int] = bundle.get("slot_date2", {})  # type: ignore[assignment]
     if not slot_date2:
-        return []
+        return [], []
 
     weekend_day_flags = _build_weekend_or_holiday_day_flags(context, bundle)
     if not weekend_day_flags:
-        return []
+        return [], []
 
     weekend_slot_indices = sorted(
         {
@@ -2482,15 +2577,15 @@ def _build_weekend_fairness_objective_terms(
         }
     )
     if not weekend_slot_indices:
-        return []
+        return [], []
 
     emp_to_dept = _build_employee_reparto_index(employees, bundle)
     if not emp_to_dept:
-        return []
+        return [], []
 
     slot_reparto_map = _build_slot_reparto_index(context, bundle)
     if not slot_reparto_map:
-        return []
+        return [], []
 
     weight_float_map = _build_employee_weekend_weight_map(employees, eid_of)
     weight_int_map = _convert_weight_map_to_int(
@@ -2504,7 +2599,7 @@ def _build_weekend_fairness_objective_terms(
         dept_members[dept].append(emp_idx)
 
     if not dept_members:
-        return []
+        return [], []
 
     weekend_slots_by_dept: dict[str, list[int]] = defaultdict(list)
     for slot_idx in weekend_slot_indices:
@@ -2514,7 +2609,9 @@ def _build_weekend_fairness_objective_terms(
 
     history_counts = _count_history_weekend_totals(context.history, eid_of)
 
-    objective_terms: list[cp_model.LinearExpr] = []
+    terms: list[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+
     for dept, members in dept_members.items():
         weekend_slots_for_dept = weekend_slots_by_dept.get(dept, [])
         if not weekend_slots_for_dept:
@@ -2557,7 +2654,7 @@ def _build_weekend_fairness_objective_terms(
 
         mean_expr = sum(weighted_terms)
         dept_slug = _sanitize_identifier(dept)
-        penalty_terms: list[cp_model.LinearExpr] = []
+        penalty_entries: list[tuple[int, cp_model.IntVar]] = []
 
         for emp_idx in positive_members:
             total_expr = employee_totals[emp_idx]
@@ -2576,48 +2673,81 @@ def _build_weekend_fairness_objective_terms(
             model.Add(deviation_var >= total_weight * total_expr - mean_expr)
             model.Add(deviation_var >= mean_expr - total_weight * total_expr)
 
-            penalty_terms.append(weights[emp_idx] * deviation_var)
+            penalty_entries.append((weights[emp_idx], deviation_var))
 
-        if not penalty_terms:
+        if not penalty_entries:
             continue
-
-        penalty_expr = sum(penalty_terms)
 
         coeff = int(round(gamma * WEEKEND_FAIRNESS_OBJECTIVE_SCALE))
         if coeff <= 0:
             continue
 
-        objective_terms.append(penalty_expr * coeff)
+        for weight_value, deviation_var in penalty_entries:
+            scaled_coeff = weight_value * coeff
+            if scaled_coeff <= 0:
+                continue
+            terms.append(deviation_var * scaled_coeff)
+            contributions.append(
+                ObjectiveTermContribution(
+                    component="fairness_weekend",
+                    var=deviation_var,
+                    coeff=scaled_coeff,
+                )
+            )
 
-    return objective_terms
+    return terms, contributions
 
 
 def _build_rest11_objective_terms(
     violations: Mapping[tuple[int, int, int], cp_model.BoolVar],
     weight: float,
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     if not violations or weight <= 0:
-        return []
+        return [], []
 
     coeff = int(round(weight * REST11_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
-    return [var * coeff for var in violations.values()]
+    terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+    for var in violations.values():
+        terms.append(var * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="riposo_11h",
+                var=var,
+                coeff=coeff,
+            )
+        )
+
+    return terms, contributions
 
 
 def _build_weekly_rest_objective_terms(
     violations: Mapping[tuple[int, int], cp_model.BoolVar],
     weight: float,
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     if not violations or weight <= 0:
-        return []
+        return [], []
 
     coeff = int(round(weight * WEEKLY_REST_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
-    return [var * coeff for var in violations.values()]
+    terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+    for var in violations.values():
+        terms.append(var * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="riposo_settimanale",
+                var=var,
+                coeff=coeff,
+            )
+        )
+
+    return terms, contributions
 
 
 def _add_cross_assignment_limits(
@@ -2672,20 +2802,20 @@ def _build_cross_assignment_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     assign_vars: Mapping[tuple[int, int], cp_model.IntVar],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     if not assign_vars:
-        return []
+        return [], []
 
     weight = _resolve_cross_penalty_weight(
         context.cfg if isinstance(context.cfg, Mapping) else None
     )
     if weight <= 0:
-        return []
+        return [], []
 
     slot_reparto_map = _build_slot_reparto_index(context, bundle)
     employee_reparto_map = _build_employee_reparto_index(context.employees, bundle)
     if not slot_reparto_map or not employee_reparto_map:
-        return []
+        return [], []
 
     cross_assignments: list[cp_model.IntVar] = []
     for (emp_idx, slot_idx), var in assign_vars.items():
@@ -2697,35 +2827,48 @@ def _build_cross_assignment_objective_terms(
             cross_assignments.append(var)
 
     if not cross_assignments:
-        return []
+        return [], []
 
     coeff = int(round(weight * CROSS_ASSIGNMENT_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
-    return [sum(cross_assignments) * coeff]
+    terms: List[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
+    for var in cross_assignments:
+        terms.append(var * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="assegnazioni_cross",
+                var=var,
+                coeff=coeff,
+            )
+        )
+
+    return terms, contributions
 
 
 def _build_preassignment_objective_terms(
     context: ModelContext,
     bundle: Mapping[str, object],
     state_vars: Mapping[tuple[int, int, str], cp_model.IntVar],
-) -> List[cp_model.LinearExpr]:
+) -> tuple[List[cp_model.LinearExpr], list[ObjectiveTermContribution]]:
     pairs = bundle.get("preassignment_pairs", [])
     if not isinstance(pairs, list) or not pairs:
-        return []
+        return [], []
 
     weight = _resolve_preassignment_penalty_weight(
         context.cfg if isinstance(context.cfg, Mapping) else None
     )
     if weight <= 0:
-        return []
+        return [], []
 
     coeff = int(round(weight * PREASSIGNMENT_OBJECTIVE_SCALE))
     if coeff <= 0:
         coeff = 1
 
     terms: list[cp_model.LinearExpr] = []
+    contributions: list[ObjectiveTermContribution] = []
     for entry in pairs:
         if not isinstance(entry, (tuple, list)) or len(entry) != 3:
             continue
@@ -2740,8 +2883,16 @@ def _build_preassignment_objective_terms(
         if var is None:
             continue
         terms.append((1 - var) * coeff)
+        contributions.append(
+            ObjectiveTermContribution(
+                component="preassegnazioni",
+                var=var,
+                coeff=coeff,
+                is_complement=True,
+            )
+        )
 
-    return terms
+    return terms, contributions
 
 
 def _build_slot_reparto_index(
