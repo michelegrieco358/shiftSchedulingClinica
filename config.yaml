@@ -11,8 +11,8 @@ preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 0.0
-  weekend_weight: 0.0
+  night_weight: 0.4
+  weekend_weight: 0.35
 
 defaults:
   allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
@@ -49,8 +49,8 @@ defaults:
     extra_consecutive_penalty_weight: 1.0
     single_night_recovery_penalty_weight: 1.0
   fairness:
-    night_weight: 0.0
-    weekend_weight: 0.0
+    night_weight: 0.4
+    weekend_weight: 0.35
 
 roles:
   infermiere:

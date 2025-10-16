@@ -44,50 +44,60 @@ class GapLoggingCallback(cp_model.CpSolverSolutionCallback):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Risolvi il modello CP-SAT caricando dati e config specificati."
-    )
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Percorso al file di configurazione YAML (default: config.yaml).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        default="data",
-        help="Directory dei CSV di input (default: data).",
-    )
-    args = parser.parse_args()
+    start_time = time.perf_counter()
+    try:
+        parser = argparse.ArgumentParser(
+            description="Risolvi il modello CP-SAT caricando dati e config specificati."
+        )
+        parser.add_argument(
+            "--config",
+            default="config.yaml",
+            help="Percorso al file di configurazione YAML (default: config.yaml).",
+        )
+        parser.add_argument(
+            "--data-dir",
+            default="data",
+            help="Directory dei CSV di input (default: data).",
+        )
+        args = parser.parse_args()
 
-    # Ignora l'avviso informativo sui locks mancanti, utile in ambiente POC.
-    warnings.filterwarnings(
-        "ignore",
-        message=r"locks\.csv non trovato: caricati 0 record da locks\.csv",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"locks\.csv: caricati \d+ record",
-        category=UserWarning,
-    )
+        # Ignora l'avviso informativo sui locks mancanti, utile in ambiente POC.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"locks\.csv non trovato: caricati 0 record da locks\.csv",
+            category=UserWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"locks\.csv: caricati \d+ record",
+            category=UserWarning,
+        )
 
-    model, artifacts, context, bundle = build_solver_from_sources(
-        args.config,
-        args.data_dir,
-    )
+        model, artifacts, context, bundle = build_solver_from_sources(
+            args.config,
+            args.data_dir,
+        )
 
-    solver = cp_model.CpSolver()
-    callback = GapLoggingCallback()
+        solver = cp_model.CpSolver()
+        callback = GapLoggingCallback()
 
-    status = solver.SolveWithSolutionCallback(model, callback)
+        status = solver.SolveWithSolutionCallback(model, callback)
 
-    print("Solver status:", solver.StatusName(status))
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return
+        print("Solver status:", solver.StatusName(status))
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return
 
-    print("Objective value:", solver.ObjectiveValue())
-    print("Assegnazioni candidate:", len(artifacts.assign_vars))
-    print("Dipendenti considerati:", len(context.employees))
+        print("Objective value:", solver.ObjectiveValue())
+        print("Assegnazioni candidate:", len(artifacts.assign_vars))
+        print("Dipendenti considerati:", len(context.employees))
+
+        breakdown = compute_objective_breakdown(solver, artifacts)
+        report_path = Path("objective_breakdown.txt")
+        write_objective_breakdown_report(breakdown, report_path)
+        print(f"Report funzione obiettivo salvato in: {report_path}")
+    finally:
+        elapsed = time.perf_counter() - start_time
+        print(f"Tempo totale esecuzione: {elapsed:.2f} s")
 
     breakdown = compute_objective_breakdown(solver, artifacts)
     report_path = Path("objective_breakdown.txt")
