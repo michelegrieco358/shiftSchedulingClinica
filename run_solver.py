@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import warnings
 from typing import Optional
 
@@ -38,6 +39,21 @@ class GapLoggingCallback(cp_model.CpSolverSolutionCallback):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Risolvi il modello CP-SAT caricando dati e config specificati."
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Percorso al file di configurazione YAML (default: config.yaml).",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default="data",
+        help="Directory dei CSV di input (default: data).",
+    )
+    args = parser.parse_args()
+
     # Ignora l'avviso informativo sui locks mancanti, utile in ambiente POC.
     warnings.filterwarnings(
         "ignore",
@@ -46,11 +62,14 @@ def main() -> None:
     )
     warnings.filterwarnings(
         "ignore",
-        message=r"locks\.csv: caricati 0 record",
+        message=r"locks\.csv: caricati \d+ record",
         category=UserWarning,
     )
 
-    model, artifacts, context, bundle = build_solver_from_sources("config.yaml", "data")
+    model, artifacts, context, bundle = build_solver_from_sources(
+        args.config,
+        args.data_dir,
+    )
 
     solver = cp_model.CpSolver()
     callback = GapLoggingCallback()
