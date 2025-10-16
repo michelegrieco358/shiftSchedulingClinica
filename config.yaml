@@ -11,8 +11,8 @@ preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 0.0
-  weekend_weight: 0.0
+  night_weight: 0.3
+  weekend_weight: 0.2
 
 defaults:
   allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
@@ -33,13 +33,13 @@ defaults:
       AMMINISTRATIVO: 7.0
     fallback_contract_daily_avg_h: 7.0
   rest11h:
-    max_monthly_exceptions: 0
-    max_consecutive_exceptions: 0
+    max_monthly_exceptions: 2
+    max_consecutive_exceptions: 1
   overstaffing:
-    enabled: true
+    enabled: false
     group_cap_default: 0
   balance:
-    max_balance_delta_month_h: 0
+    max_balance_delta_month_h: 40
     due_hours_penalty_weight: 1.0
   night:
     max_consecutive_nights: 3
@@ -49,8 +49,8 @@ defaults:
     extra_consecutive_penalty_weight: 1.0
     single_night_recovery_penalty_weight: 1.0
   fairness:
-    night_weight: 0.0
-    weekend_weight: 0.0
+    night_weight: 0.3
+    weekend_weight: 0.2
 
 roles:
   infermiere:
