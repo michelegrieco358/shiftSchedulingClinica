@@ -1,0 +1,13 @@
+Breakdown funzione obiettivo
+Valore totale funzione obiettivo: 161080.000000
+Somma contributi calcolati: 161080.000000
+
+Dettaglio per componente:
+- ore_mensili_sotto: contributo=117120.000000 (72.71%), violazioni=29280.000000 (89.95%)
+- ore_mensili_sopra: contributo=12960.000000 (8.05%), violazioni=3240.000000 (9.95%)
+- notti_consecutive: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- recupero_singola_notte: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- riposo_11h: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- riposo_settimanale: contributo=31000.000000 (19.25%), violazioni=31.000000 (0.10%)
+
+Totale violazioni (non pesate): 32551.000000
