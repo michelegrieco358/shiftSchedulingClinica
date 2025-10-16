@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import time
 import warnings
 from typing import Optional
 
@@ -99,6 +98,11 @@ def main() -> None:
     finally:
         elapsed = time.perf_counter() - start_time
         print(f"Tempo totale esecuzione: {elapsed:.2f} s")
+
+    breakdown = compute_objective_breakdown(solver, artifacts)
+    report_path = Path("objective_breakdown.txt")
+    write_objective_breakdown_report(breakdown, report_path)
+    print(f"Report funzione obiettivo salvato in: {report_path}")
 
 
 if __name__ == "__main__":
