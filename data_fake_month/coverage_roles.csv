@@ -15,3 +15,6 @@ PS_NIGHT_N,N,pronto_soccorso,infermiere,infermiere,infermiere,1
 AMB_DAY_M,M,ambulatorio,infermiere,infermiere,infermiere,1
 AMB_DAY_M,M,ambulatorio,medico,medico,medico,1
 AMB_DAY_M,M,ambulatorio,amministrativo,amministrativo,amministrativo,1
+DEG_NIGHT_N,N,degenza,infermiere,infermiere,infermiere,2
+AMB_EVE_P,P,ambulatorio,infermiere,infermiere,infermiere,1
+AMB_EVE_P,P,ambulatorio,medico,medico,medico,1
