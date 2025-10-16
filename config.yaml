@@ -36,8 +36,8 @@ defaults:
     max_monthly_exceptions: 2
     max_consecutive_exceptions: 1
   overstaffing:
-    enabled: false
-    group_cap_default: 0
+    enabled: true
+    group_cap_default: 1
   balance:
     max_balance_delta_month_h: 40
     due_hours_penalty_weight: 1.0
