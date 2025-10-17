@@ -11,8 +11,8 @@ preassignments:
   change_penalty_weight: 5.0
 
 fairness:
-  night_weight: 1.0
-  weekend_weight: 1.0
+  night_weight: 0.1
+  weekend_weight: 0.1
 
 defaults:
   allowed_roles: ["infermiere", "oss", "medico", "amministrativo"]
