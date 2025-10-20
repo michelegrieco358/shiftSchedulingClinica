@@ -14,8 +14,9 @@ SINGLE_NIGHT_RECOVERY_OBJECTIVE_SCALE = 1000
 REST11_OBJECTIVE_SCALE = 1000
 WEEKLY_REST_OBJECTIVE_SCALE = 1000
 CROSS_ASSIGNMENT_OBJECTIVE_SCALE = 1000
+NIGHT_FAIRNESS_OBJECTIVE_SCALE = 10
 NIGHT_FAIRNESS_WEIGHT_SCALE = 100
-WEEKEND_FAIRNESS_OBJECTIVE_SCALE = 1000
+WEEKEND_FAIRNESS_OBJECTIVE_SCALE = 10
 WEEKEND_FAIRNESS_WEIGHT_SCALE = 100
 PREASSIGNMENT_OBJECTIVE_SCALE = 1000
 
@@ -78,6 +79,7 @@ class ObjectiveTermContribution:
     coeff: int
     is_complement: bool = False
     label: str | None = None
+    unit_scale: float | None = None
 
 
 @dataclass
@@ -2251,6 +2253,7 @@ def _build_due_hour_objective_terms(
                     component="ore_mensili_sotto",
                     var=under_var,
                     coeff=scaled,
+                    unit_scale=minutes,
                 )
             )
 
@@ -2267,6 +2270,7 @@ def _build_due_hour_objective_terms(
                     component="ore_mensili_sopra",
                     var=over_var,
                     coeff=scaled,
+                    unit_scale=minutes,
                 )
             )
 
@@ -2342,6 +2346,7 @@ def _build_final_balance_objective_terms(
                 component="bilancio_finale",
                 var=abs_var,
                 coeff=scaled,
+                unit_scale=minutes,
             )
         )
 

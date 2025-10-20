@@ -1,0 +1,17 @@
+Breakdown funzione obiettivo
+Valore totale funzione obiettivo: 6076536.000000
+Somma contributi calcolati: 6076536.000000
+
+Dettaglio per componente:
+- ore_mensili_sotto: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%), violazioni_turni_medi=0.000000 (0.00%)
+- ore_mensili_sopra: contributo=424440.000000 (6.98%), violazioni=23580.000000 (0.16%), violazioni_turni_medi=56.142857 (50.00%)
+- bilancio_finale: contributo=424440.000000 (6.98%), violazioni=23580.000000 (0.16%), violazioni_turni_medi=56.142857 (50.00%)
+- notti_consecutive: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- recupero_singola_notte: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- fairness_notti: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- fairness_weekend: contributo=1927656.000000 (31.72%), violazioni=34607.000000 (99.58%)
+- riposo_11h: contributo=0.000000 (0.00%), violazioni=0.000000 (0.00%)
+- riposo_settimanale: contributo=3300000.000000 (54.31%), violazioni=33.000000 (0.09%)
+
+Totale violazioni (non pesate): 81800.000000
+Totale violazioni equivalenti (turni medi): 112.285714

@@ -55,6 +55,8 @@ def test_objective_breakdown_and_report(tmp_path: Path) -> None:
     )
     assert math.isclose(preassign_row.violations, 1.0)
     assert math.isclose(preassign_row.contribution, breakdown.total_objective)
+    assert preassign_row.violations_normalized is None
+    assert breakdown.total_violations_normalized is None
 
     report_path = tmp_path / "objective_report.txt"
     written_path = write_objective_breakdown_report(breakdown, report_path)

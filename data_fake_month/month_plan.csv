@@ -239,3 +239,11 @@ data,reparto_id,shift_code,coverage_code
 2025-11-30,pronto_soccorso,M,PS_DAY_M
 2025-11-30,pronto_soccorso,N,PS_NIGHT_N
 2025-11-30,pronto_soccorso,P,PS_DAY_P
+2025-11-05,ambulatorio,M,AMB_DAY_M
+2025-11-08,ambulatorio,M,AMB_DAY_M
+2025-11-10,ambulatorio,M,AMB_DAY_M
+2025-11-13,ambulatorio,M,AMB_DAY_M
+2025-11-17,ambulatorio,M,AMB_DAY_M
+2025-11-21,ambulatorio,M,AMB_DAY_M
+2025-11-24,ambulatorio,M,AMB_DAY_M
+2025-11-28,ambulatorio,M,AMB_DAY_M
