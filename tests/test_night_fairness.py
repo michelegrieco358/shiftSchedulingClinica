@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from src.model import (
-    NIGHT_FAIRNESS_WEIGHT_SCALE,
+    NIGHT_FAIRNESS_OBJECTIVE_SCALE,
     ModelContext,
     _build_night_fairness_objective_terms,
 )
@@ -109,9 +109,13 @@ def _objective_terms_for_weight(weight: float) -> list[tuple[str, int]]:
 def test_night_fairness_adds_weighted_objective_terms() -> None:
     fairness_terms = _objective_terms_for_weight(1.75)
     assert fairness_terms
-    expected_coeff = int(round(1.75 * NIGHT_FAIRNESS_WEIGHT_SCALE))
+    expected_coeff = int(round(1.75 * NIGHT_FAIRNESS_OBJECTIVE_SCALE))
     assert expected_coeff > 0
     assert all(coeff == expected_coeff for _, coeff in fairness_terms)
+    assert {name for name, _ in fairness_terms} == {
+        "night_fair_dev_units_e0_D1",
+        "night_fair_dev_units_e1_D1",
+    }
 
 
 def test_night_fairness_skipped_with_zero_weight() -> None:
