@@ -2594,7 +2594,9 @@ def _build_weekend_fairness_objective_terms(
 
     weight_float_map = _build_employee_weekend_weight_map(employees, eid_of)
     weight_int_map = _convert_weight_map_to_int(
-        weight_float_map, scale=WEEKEND_FAIRNESS_WEIGHT_SCALE
+        weight_float_map,
+        scale=WEEKEND_FAIRNESS_WEIGHT_SCALE,
+        reduce_gcd=False,
     )
 
     dept_members: dict[str, list[int]] = defaultdict(list)
@@ -2631,12 +2633,13 @@ def _build_weekend_fairness_objective_terms(
         if total_weight <= 0:
             continue
 
-        weighted_terms: list[cp_model.LinearExpr] = []
         employee_totals: dict[int, cp_model.LinearExpr] = {}
         employee_upper: dict[int, int] = {}
+        employee_history: dict[int, int] = {}
 
         for emp_idx in positive_members:
             history_value = history_counts.get(emp_idx, 0)
+            employee_history[emp_idx] = history_value
             planned_vars = [
                 assign_vars[(emp_idx, slot_idx)]
                 for slot_idx in weekend_slots_for_dept
@@ -2652,51 +2655,58 @@ def _build_weekend_fairness_objective_terms(
             total_expr = planned_sum + history_value
             employee_totals[emp_idx] = total_expr
             employee_upper[emp_idx] = history_value + eligible_count
-            weighted_terms.append(weights[emp_idx] * total_expr)
 
-        if not weighted_terms:
+        if not employee_totals:
             continue
 
-        mean_expr = sum(weighted_terms)
-        dept_slug = _sanitize_identifier(dept)
-        penalty_entries: list[tuple[int, cp_model.IntVar]] = []
-
         for emp_idx in positive_members:
-            total_expr = employee_totals[emp_idx]
-            history_value = history_counts.get(emp_idx, 0)
+            history_value = employee_history.get(emp_idx, 0)
             upper_bound = employee_upper.get(emp_idx, 0)
             if upper_bound <= history_value:
                 upper_bound = history_value + len(weekend_slots_for_dept)
+            if upper_bound < 0:
+                upper_bound = 0
+            employee_upper[emp_idx] = upper_bound
 
-            deviation_upper = total_weight * max(upper_bound, 0)
+        total_sum_expr = sum(employee_totals.values())
+        total_sum_upper = sum(employee_upper.get(emp_idx, 0) for emp_idx in positive_members)
+        dept_slug = _sanitize_identifier(dept)
+        penalty_vars: list[cp_model.IntVar] = []
+
+        for emp_idx in positive_members:
+            total_expr = employee_totals[emp_idx]
+            upper_bound = employee_upper.get(emp_idx, 0)
+            deviation_upper = (
+                total_weight * max(upper_bound, 0)
+                + weights[emp_idx] * max(total_sum_upper, 0)
+            )
             deviation_var = model.NewIntVar(
                 0,
                 max(deviation_upper, 0),
                 f"weekend_fair_dev_e{emp_idx}_{dept_slug}",
             )
 
-            model.Add(deviation_var >= total_weight * total_expr - mean_expr)
-            model.Add(deviation_var >= mean_expr - total_weight * total_expr)
+            scaled_total_expr = total_weight * total_expr
+            target_expr = total_sum_expr * weights[emp_idx]
+            model.Add(deviation_var >= scaled_total_expr - target_expr)
+            model.Add(deviation_var >= target_expr - scaled_total_expr)
 
-            penalty_entries.append((weights[emp_idx], deviation_var))
+            penalty_vars.append(deviation_var)
 
-        if not penalty_entries:
+        if not penalty_vars:
             continue
 
         coeff = int(round(gamma * WEEKEND_FAIRNESS_OBJECTIVE_SCALE))
         if coeff <= 0:
             continue
 
-        for weight_value, deviation_var in penalty_entries:
-            scaled_coeff = weight_value * coeff
-            if scaled_coeff <= 0:
-                continue
-            terms.append(deviation_var * scaled_coeff)
+        for deviation_var in penalty_vars:
+            terms.append(deviation_var * coeff)
             contributions.append(
                 ObjectiveTermContribution(
                     component="fairness_weekend",
                     var=deviation_var,
-                    coeff=scaled_coeff,
+                    coeff=coeff,
                 )
             )
 
@@ -3173,7 +3183,7 @@ def _build_employee_weekend_weight_map(
 
 
 def _convert_weight_map_to_int(
-    weight_map: Mapping[int, float], *, scale: int = NIGHT_FAIRNESS_WEIGHT_SCALE
+    weight_map: Mapping[int, float], *, scale: int = NIGHT_FAIRNESS_WEIGHT_SCALE, reduce_gcd: bool = True
 ) -> dict[int, int]:
     result: dict[int, int] = {}
     positives: list[int] = []
@@ -3187,7 +3197,7 @@ def _convert_weight_map_to_int(
         result[emp_idx] = scaled
         positives.append(scaled)
 
-    if positives:
+    if reduce_gcd and positives:
         gcd_value = positives[0]
         for item in positives[1:]:
             gcd_value = math.gcd(gcd_value, item)
