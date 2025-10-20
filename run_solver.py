@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import warnings
-from typing import Optional
+from typing import Iterable, Mapping, Optional
 
 from ortools.sat.python import cp_model
+import pandas as pd
 
 from src.objective_report import (
     compute_objective_breakdown,
@@ -41,6 +42,44 @@ class GapLoggingCallback(cp_model.CpSolverSolutionCallback):
         print(
             f"Nuova soluzione: objective={objective:.6g}  bound={bound:.6g}  gap={gap:.4%}"
         )
+
+
+def _build_state_table(
+    solver: cp_model.CpSolver,
+    artifacts: ModelArtifacts,
+    bundle: Mapping[str, object],
+) -> pd.DataFrame:
+    emp_of: Mapping[int, str] = bundle.get("emp_of", {})  # type: ignore[assignment]
+    date_of: Mapping[int, object] = bundle.get("date_of", {})  # type: ignore[assignment]
+
+    if not emp_of or not date_of:
+        raise RuntimeError("Bundle privo delle mappe necessarie (emp_of/date_of).")
+
+    state_codes: Iterable[str] = artifacts.state_codes
+
+    rows: list[dict[str, object]] = []
+    for emp_idx in sorted(emp_of.keys()):
+        employee_id = emp_of[emp_idx]
+        for day_idx in sorted(date_of.keys()):
+            day = date_of[day_idx]
+            state_value = ""
+            for code in state_codes:
+                var = artifacts.state_vars.get((emp_idx, day_idx, code))
+                if var is None:
+                    continue
+                if solver.Value(var):
+                    state_value = code
+                    break
+            rows.append(
+                {
+                    "employee_id": employee_id,
+                    "date": str(day),
+                    "state": state_value,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    return df.sort_values(["date", "employee_id"]).reset_index(drop=True)
 
 
 def main() -> None:
@@ -77,7 +116,7 @@ def main() -> None:
     )
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 900
+    solver.parameters.max_time_in_seconds = 600
     callback = GapLoggingCallback()
 
     status = solver.SolveWithSolutionCallback(model, callback)
@@ -94,6 +133,15 @@ def main() -> None:
     report_path = Path("objective_breakdown.txt")
     write_objective_breakdown_report(breakdown, report_path)
     print(f"Report funzione obiettivo salvato in: {report_path}")
+
+    try:
+        state_df = _build_state_table(solver, artifacts, bundle)
+    except RuntimeError as exc:  # pragma: no cover - bundle inconsistente
+        print(f"Impossibile generare il CSV delle assegnazioni: {exc}")
+    else:
+        states_path = Path("states.csv")
+        state_df.to_csv(states_path, index=False)
+        print(f"Assegnazioni (stati giornalieri) esportate in: {states_path}")
 
 
 if __name__ == "__main__":
