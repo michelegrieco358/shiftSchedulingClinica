@@ -2431,18 +2431,13 @@ def _build_night_fairness_objective_terms(
     if not eid_of:
         return [], []
 
-    num_days = int(bundle.get("num_days", 0))
-    if num_days <= 0:
-        return [], []
-
     cfg = context.cfg if isinstance(context.cfg, Mapping) else {}
     night_codes = _resolve_night_codes(cfg)
     if not night_codes:
         return [], []
 
     weight_scale = _resolve_night_fairness_weight(cfg)
-    weight_coeff = int(round(weight_scale * NIGHT_FAIRNESS_WEIGHT_SCALE))
-    if weight_coeff <= 0:
+    if weight_scale <= 0:
         return [], []
 
     history_counts = _count_history_night_totals(context.history, night_codes, eid_of)
@@ -2452,7 +2447,11 @@ def _build_night_fairness_objective_terms(
 
     night_eligible = _build_employee_night_eligibility_map(employees, eid_of)
     weight_float_map = _build_employee_night_weight_map(employees, eid_of)
-    weight_int_map = _convert_weight_map_to_int(weight_float_map)
+    weight_int_map = _convert_weight_map_to_int(
+        weight_float_map,
+        scale=NIGHT_FAIRNESS_WEIGHT_SCALE,
+        reduce_gcd=False,
+    )
 
     dept_members: dict[str, list[int]] = {}
     for emp_idx, dept in emp_to_dept.items():
@@ -2468,6 +2467,17 @@ def _build_night_fairness_objective_terms(
     terms: list[cp_model.LinearExpr] = []
     contributions: list[ObjectiveTermContribution] = []
 
+    night_vars_by_emp: dict[int, list[cp_model.BoolVar]] = defaultdict(list)
+    night_days_by_dept: dict[str, set[int]] = defaultdict(set)
+    for (emp_idx, day_idx), var in night_by_day.items():
+        dept = emp_to_dept.get(emp_idx)
+        if not dept:
+            continue
+        if not night_eligible.get(emp_idx, True):
+            continue
+        night_vars_by_emp[emp_idx].append(var)
+        night_days_by_dept[dept].add(day_idx)
+
     for dept, members in dept_members.items():
         if len(members) < 2:
             continue
@@ -2476,67 +2486,117 @@ def _build_night_fairness_objective_terms(
         if len(positive_members) < 2:
             continue
 
+        dept_night_days = night_days_by_dept.get(dept)
+        if not dept_night_days:
+            continue
+
         weights = {emp: weight_int_map.get(emp, 0) for emp in positive_members}
         total_weight = sum(weights.values())
         if total_weight <= 0:
             continue
 
-        max_history = max(history_counts.get(emp, 0) for emp in positive_members)
-        max_total = max_history + num_days
-        weighted_sum_max = sum(weights[emp] * max_total for emp in positive_members)
-        if weighted_sum_max <= 0:
-            continue
-
-        dept_slug = _sanitize_identifier(dept)
-        total_var = model.NewIntVar(0, weighted_sum_max, f"night_fair_total_{dept_slug}")
-
-        total_expr_terms: list[cp_model.LinearExpr] = []
-        penalty_entries: list[tuple[int, cp_model.IntVar]] = []
+        employee_totals: dict[int, cp_model.LinearExpr] = {}
+        employee_upper: dict[int, int] = {}
+        employee_history: dict[int, int] = {}
 
         for emp_idx in positive_members:
             history_value = history_counts.get(emp_idx, 0)
-            planned_vars = [
-                night_by_day[(emp_idx, day_idx)]
-                for day_idx in range(num_days)
-                if (emp_idx, day_idx) in night_by_day
-            ]
+            employee_history[emp_idx] = history_value
+            planned_vars = night_vars_by_emp.get(emp_idx, [])
+            eligible_count = len(planned_vars)
             if planned_vars:
                 planned_sum: cp_model.LinearExpr = sum(planned_vars)
             else:
                 planned_sum = 0
 
             total_expr = planned_sum + history_value
-            weight = weights[emp_idx]
-            total_expr_terms.append(weight * total_expr)
+            employee_totals[emp_idx] = total_expr
+            employee_upper[emp_idx] = history_value + eligible_count
 
-            max_total_emp = history_value + num_days
+        if not employee_totals:
+            continue
+
+        dept_total_slots = len(dept_night_days)
+        for emp_idx in positive_members:
+            history_value = employee_history.get(emp_idx, 0)
+            upper_bound = employee_upper.get(emp_idx, 0)
+            if upper_bound <= history_value:
+                upper_bound = history_value + dept_total_slots
+            if upper_bound < 0:
+                upper_bound = 0
+            employee_upper[emp_idx] = upper_bound
+
+        total_sum_expr = sum(employee_totals.values())
+        total_sum_upper = sum(employee_upper.get(emp_idx, 0) for emp_idx in positive_members)
+        dept_slug = _sanitize_identifier(dept)
+        penalty_vars: list[cp_model.IntVar] = []
+
+        for emp_idx in positive_members:
+            total_expr = employee_totals[emp_idx]
+            upper_bound = employee_upper.get(emp_idx, 0)
+            deviation_upper = (
+                total_weight * max(upper_bound, 0)
+                + weights[emp_idx] * max(total_sum_upper, 0)
+            )
             deviation_var = model.NewIntVar(
                 0,
-                total_weight * max_total_emp,
+                max(deviation_upper, 0),
                 f"night_fair_dev_e{emp_idx}_{dept_slug}",
             )
 
             scaled_total_expr = total_weight * total_expr
-            model.Add(deviation_var >= scaled_total_expr - total_var)
-            model.Add(deviation_var >= total_var - scaled_total_expr)
+            target_expr = total_sum_expr * weights[emp_idx]
+            model.Add(deviation_var >= scaled_total_expr - target_expr)
+            model.Add(deviation_var >= target_expr - scaled_total_expr)
 
-            penalty_entries.append((weight, deviation_var))
+            scaled_upper = max(deviation_upper, 0) * NIGHT_FAIRNESS_WEIGHT_SCALE
+            scaled_diff_var = model.NewIntVar(
+                0,
+                scaled_upper,
+                f"night_fair_dev_scaled_e{emp_idx}_{dept_slug}",
+            )
+            model.Add(scaled_diff_var == deviation_var * NIGHT_FAIRNESS_WEIGHT_SCALE)
 
-        if not total_expr_terms or not penalty_entries:
+            rounded_numerator_upper = scaled_upper + total_weight // 2
+            rounded_numerator = model.NewIntVar(
+                0,
+                rounded_numerator_upper,
+                f"night_fair_dev_round_num_e{emp_idx}_{dept_slug}",
+            )
+            model.Add(rounded_numerator == scaled_diff_var + total_weight // 2)
+
+            if total_weight > 0:
+                units_upper = (rounded_numerator_upper + total_weight - 1) // total_weight
+            else:
+                units_upper = 0
+            deviation_units = model.NewIntVar(
+                0,
+                units_upper,
+                f"night_fair_dev_units_e{emp_idx}_{dept_slug}",
+            )
+            model.AddDivisionEquality(
+                deviation_units,
+                rounded_numerator,
+                total_weight,
+            )
+
+            penalty_vars.append(deviation_units)
+
+        if not penalty_vars:
             continue
 
-        model.Add(total_var == sum(total_expr_terms))
+        coeff = int(round(weight_scale * NIGHT_FAIRNESS_OBJECTIVE_SCALE))
+        if coeff <= 0:
+            continue
 
-        for weight_value, deviation_var in penalty_entries:
-            scaled_coeff = weight_value * weight_coeff
-            if scaled_coeff <= 0:
-                continue
-            terms.append(deviation_var * scaled_coeff)
+        for deviation_units in penalty_vars:
+            terms.append(deviation_units * coeff)
             contributions.append(
                 ObjectiveTermContribution(
                     component="fairness_notti",
-                    var=deviation_var,
-                    coeff=scaled_coeff,
+                    var=deviation_units,
+                    coeff=coeff,
+                    unit_scale=NIGHT_FAIRNESS_WEIGHT_SCALE,
                 )
             )
 
