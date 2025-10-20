@@ -2691,7 +2691,38 @@ def _build_weekend_fairness_objective_terms(
             model.Add(deviation_var >= scaled_total_expr - target_expr)
             model.Add(deviation_var >= target_expr - scaled_total_expr)
 
-            penalty_vars.append(deviation_var)
+            scaled_upper = max(deviation_upper, 0) * WEEKEND_FAIRNESS_WEIGHT_SCALE
+            scaled_diff_var = model.NewIntVar(
+                0,
+                scaled_upper,
+                f"weekend_fair_dev_scaled_e{emp_idx}_{dept_slug}",
+            )
+            model.Add(scaled_diff_var == deviation_var * WEEKEND_FAIRNESS_WEIGHT_SCALE)
+
+            rounded_numerator_upper = scaled_upper + total_weight // 2
+            rounded_numerator = model.NewIntVar(
+                0,
+                rounded_numerator_upper,
+                f"weekend_fair_dev_round_num_e{emp_idx}_{dept_slug}",
+            )
+            model.Add(rounded_numerator == scaled_diff_var + total_weight // 2)
+
+            if total_weight > 0:
+                units_upper = (rounded_numerator_upper + total_weight - 1) // total_weight
+            else:
+                units_upper = 0
+            deviation_units = model.NewIntVar(
+                0,
+                units_upper,
+                f"weekend_fair_dev_units_e{emp_idx}_{dept_slug}",
+            )
+            model.AddDivisionEquality(
+                deviation_units,
+                rounded_numerator,
+                total_weight,
+            )
+
+            penalty_vars.append(deviation_units)
 
         if not penalty_vars:
             continue
