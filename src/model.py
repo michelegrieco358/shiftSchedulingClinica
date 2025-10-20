@@ -2738,6 +2738,7 @@ def _build_weekend_fairness_objective_terms(
                     component="fairness_weekend",
                     var=deviation_var,
                     coeff=coeff,
+                    unit_scale=WEEKEND_FAIRNESS_WEIGHT_SCALE,
                 )
             )
 

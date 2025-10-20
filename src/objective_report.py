@@ -155,7 +155,7 @@ def write_objective_breakdown_report(
                     f"({row.contribution_pct:.2f}%), violazioni_equivalenti={row.violations_normalized:.6f} "
                     f"({row.violation_pct:.2f}%)"
                 )
-                entry += f", violazioni_minuti={row.violations:.6f}"
+                entry += f", violazioni_raw={row.violations:.6f}"
                 if row.violations_normalized_pct is not None:
                     entry += f" (quota turni: {row.violations_normalized_pct:.2f}%)"
             else:
